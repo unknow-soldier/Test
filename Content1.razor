@@ -1,23 +1,36 @@
--- 1. TABLAS HIJAS: Tablas que dependen de 'articles' (DEBES ELIMINAR ESTAS PRIMERO)
-SELECT 
-    OBJECT_NAME(f.parent_object_id) AS Tabla_Hija_ADeletarPrimero,
-    COL_NAME(fc.parent_object_id, fc.parent_column_id) AS Columna_FK_Hija,
-    OBJECT_NAME(f.referenced_object_id) AS Tabla_Padre,
-    f.name AS Nombre_FK
-FROM sys.foreign_keys AS f
-INNER JOIN sys.foreign_key_columns AS fc 
-    ON f.object_id = fc.constraint_object_id
-WHERE OBJECT_NAME(f.referenced_object_id) = 'articles'
+BEGIN TRANSACTION;
 
-UNION ALL
+BEGIN TRY
+    -- Variable con el ID del artículo que vas a eliminar
+    DECLARE @ArticleId UNIQUEIDENTIFIER = 'ED0B06B2-CE1B-4A41-8F04-07EBEE003A16'; 
 
--- 2. TABLAS PADRE: Tablas de las que depende 'articles' (ESTAS LAS ELIMINAS AL FINAL)
-SELECT 
-    OBJECT_NAME(f.parent_object_id) AS Tabla_Actual,
-    COL_NAME(fc.parent_object_id, fc.parent_column_id) AS Columna_FK_Actual,
-    OBJECT_NAME(f.referenced_object_id) AS Tabla_Padre_ADeletarAlFinal,
-    f.name AS Nombre_FK
-FROM sys.foreign_keys AS f
-INNER JOIN sys.foreign_key_columns AS fc 
-    ON f.object_id = fc.constraint_object_id
-WHERE OBJECT_NAME(f.parent_object_id) = 'articles';
+    -- 1. ELIMINAR REGISTROS DE LAS TABLAS HIJAS (Dependientes)
+    DELETE FROM [dbo].[article_attachments]    WHERE [ArticleId] = @ArticleId;
+    DELETE FROM [dbo].[article_content_blocks] WHERE [ArticleId] = @ArticleId;
+    
+    -- La tabla article_related tiene dos relaciones hacia articles:
+    DELETE FROM [dbo].[article_related]        WHERE [ArticleId] = @ArticleId OR [RelatedArticleId] = @ArticleId;
+    
+    DELETE FROM [dbo].[article_tags]           WHERE [ArticleId] = @ArticleId;
+    DELETE FROM [dbo].[article_versions]       WHERE [ArticleId] = @ArticleId;
+    DELETE FROM [dbo].[collection_articles]    WHERE [ArticleId] = @ArticleId;
+    DELETE FROM [dbo].[article_comments]       WHERE [ArticleId] = @ArticleId;
+    DELETE FROM [dbo].[article_favorites]      WHERE [ArticleId] = @ArticleId;
+    DELETE FROM [dbo].[article_history]        WHERE [ArticleId] = @ArticleId;
+    DELETE FROM [dbo].[article_ratings]        WHERE [ArticleId] = @ArticleId;
+
+    -- 2. ELIMINAR EL REGISTRO EN LA TABLA PRINCIPAL
+    DELETE FROM [dbo].[articles]               WHERE [Id] = @ArticleId;
+
+    -- Confirmar los cambios si todo salió bien
+    COMMIT TRANSACTION;
+    PRINT 'Artículo y todas sus dependencias eliminados correctamente.';
+
+END TRY
+BEGIN CATCH
+    -- Si ocurre algún error (ej. otra restricción no contemplada), revierte todo
+    ROLLBACK TRANSACTION;
+    
+    PRINT 'Error al eliminar. Se revirtió la transacción.';
+    THROW;
+END CATCH;
