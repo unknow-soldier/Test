@@ -1,113 +1,98 @@
-public async Task<bool> DeleteArticleAsync(Guid articleId)
-{
-    var authorId = await _securityService.GetCurrentAuthorIdAsync();
-    var isAdmin = await _securityService.IsAdminAsync();
+<div class="form-actions">
+    <a class="btn btn--secondary" href="/articulos">Cancelar</a>
 
-    await using var db = await _dbFactory.CreateDbContextAsync();
-    var strategy = db.Database.CreateExecutionStrategy();
-
-    return await strategy.ExecuteAsync(async () =>
+    @if (_original.Status == ArticleStatus.Draft)
     {
-        var article = await db.Articles.AsNoTracking().FirstOrDefaultAsync(a => a.Id == articleId);
-        if (article is null) return false;
-        if (article.AuthorId != authorId && !isAdmin) return false;
-
-        await using var transaction = await db.Database.BeginTransactionAsync();
-        try
-        {
-            await db.Database.ExecuteSqlInterpolatedAsync(
-                $"DELETE FROM [dbo].[article_attachments] WHERE [ArticleId] = {articleId}");
-
-            await db.Database.ExecuteSqlInterpolatedAsync(
-                $"DELETE FROM [dbo].[article_content_blocks] WHERE [ArticleId] = {articleId}");
-
-            await db.Database.ExecuteSqlInterpolatedAsync(
-                $"DELETE FROM [dbo].[article_related] WHERE [ArticleId] = {articleId} OR [RelatedArticleId] = {articleId}");
-
-            await db.Database.ExecuteSqlInterpolatedAsync(
-                $"DELETE FROM [dbo].[article_tags] WHERE [ArticleId] = {articleId}");
-
-            await db.Database.ExecuteSqlInterpolatedAsync(
-                $"DELETE FROM [dbo].[article_versions] WHERE [ArticleId] = {articleId}");
-
-            await db.Database.ExecuteSqlInterpolatedAsync(
-                $"DELETE FROM [dbo].[collection_articles] WHERE [ArticleId] = {articleId}");
-
-            await db.Database.ExecuteSqlInterpolatedAsync(
-                $"DELETE FROM [dbo].[article_comments] WHERE [ArticleId] = {articleId}");
-
-            await db.Database.ExecuteSqlInterpolatedAsync(
-                $"DELETE FROM [dbo].[article_favorites] WHERE [ArticleId] = {articleId}");
-
-            await db.Database.ExecuteSqlInterpolatedAsync(
-                $"DELETE FROM [dbo].[article_history] WHERE [ArticleId] = {articleId}");
-
-            await db.Database.ExecuteSqlInterpolatedAsync(
-                $"DELETE FROM [dbo].[article_ratings] WHERE [ArticleId] = {articleId}");
-
-            await db.Database.ExecuteSqlInterpolatedAsync(
-                $"DELETE FROM [dbo].[articles] WHERE [Id] = {articleId}");
-
-            await transaction.CommitAsync();
-            return true;
-        }
-        catch
-        {
-            await transaction.RollbackAsync();
-            throw;
-        }
-    });
-}
-
-
-
-
-
-
-
-
-private DraftViewModel? _deleteTarget;
-private bool _deleting;
-
-private void OpenDeleteModal(DraftViewModel draft) => _deleteTarget = draft;
-private void CloseDeleteModal() => _deleteTarget = null;
-
-private async Task ConfirmDelete()
-{
-    if (_deleteTarget is null) return;
-
-    _deleting = true;
-    StateHasChanged();
-
-    var ok = await Articles.DeleteArticleAsync(_deleteTarget.Id);
-
-    _deleting = false;
-    _deleteTarget = null;
-
-    if (!ok)
+        <button type="button" class="btn btn--ghost" @onclick="() => Save(ArticleStatus.Draft)">
+            <Icon Name="save" /> Guardar como borrador
+        </button>
+        <button type="button" class="btn btn--outline" @onclick="OpenReviewModal">
+            <Icon Name="help-circle" /> Enviar a revisión
+        </button>
+        <button type="button" class="btn btn--primary" @onclick="() => Save(ArticleStatus.Published)">
+            <Icon Name="check-circle" /> Publicar
+        </button>
+    }
+    else if (_original.Status == ArticleStatus.InReview)
     {
-        Toast.Show("No se pudo eliminar el artículo.", ToastVariant.Danger, "alert-triangle");
-        return;
+        <button type="button" class="btn btn--ghost" @onclick="() => Save(ArticleStatus.InReview)">
+            <Icon Name="save" /> Guardar cambios
+        </button>
+
+        @if (_isAdmin)
+        {
+            <button type="button" class="btn btn--outline btn--danger" @onclick="Reject">
+                <Icon Name="corner-up-left" /> Devolver a borrador
+            </button>
+            <button type="button" class="btn btn--success" @onclick="Approve">
+                <Icon Name="check-circle" /> Aprobar y publicar
+            </button>
+        }
+        else
+        {
+            <span class="form-hint form-hint--waiting"><Icon Name="clock" /> Esperando aprobación de un administrador.</span>
+        }
+    }
+    else
+    {
+        <button type="button" class="btn btn--primary" @onclick="() => Save(ArticleStatus.Published)">
+            <Icon Name="check-circle" /> Guardar cambios
+        </button>
     }
 
-    Toast.Show("Borrador eliminado.", ToastVariant.Success, "trash-2");
-    await ReloadAsync();
+    <button type="button" class="btn btn--ghost btn--danger btn--delete-article" @onclick="OpenDeleteModal">
+        <Icon Name="trash-2" /> Eliminar artículo
+    </button>
+</div>
+
+
+
+
+
+
+
+@if (_showReviewModal)
+{
+    <div class="modal-overlay" @onclick="CloseReviewModal">
+        <div class="modal-card" @onclick:stopPropagation="true">
+            <div class="modal-card__icon modal-card__icon--warning">
+                <Icon Name="help-circle" />
+            </div>
+            <h3>Enviar a revisión</h3>
+            <p>Contále a un administrador por qué considerás que este artículo necesita revisión antes de publicarse (por ejemplo, si podría contener información sensible o confidencial).</p>
+            <textarea class="input" rows="3" placeholder="Ej: No estoy seguro si este procedimiento es apto para difusión pública..."
+                      @bind="_reviewReason" @bind:event="oninput"></textarea>
+            <div class="modal-card__actions">
+                <button type="button" class="btn btn--secondary" @onclick="CloseReviewModal">Cancelar</button>
+                <button type="button" class="btn btn--primary" disabled="@(string.IsNullOrWhiteSpace(_reviewReason) || _sendingReview)"
+                        @onclick="ConfirmSendToReview">
+                    @if (_sendingReview) { <span class="spinner"></span> } else { <Icon Name="send" /> }
+                    Enviar a revisión
+                </button>
+            </div>
+        </div>
+    </div>
 }
 
-
-
-
-
-
-@if (_deleteTarget is not null)
+@if (_showDeleteModal)
 {
     <div class="modal-overlay" @onclick="CloseDeleteModal">
         <div class="modal-card" @onclick:stopPropagation="true">
             <div class="modal-card__icon modal-card__icon--danger">
                 <Icon Name="alert-triangle" />
             </div>
-            <h3>¿Eliminar este borrador?</h3>
-            <p>"@_deleteTarget.Title" se eliminará permanentemente, junto con su contenido, etiquetas y portada. Esta acción no se puede deshacer.</p>
+            <h3>¿Eliminar este artículo?</h3>
+            <p>
+                "@_original?.Title" se eliminará permanentemente, junto con su contenido, etiquetas,
+                portada, favoritos y versiones asociadas. Esta acción no se puede deshacer.
+            </p>
+            @if (!string.IsNullOrEmpty(_deleteError))
+            {
+                <div class="callout callout--danger">
+                    <Icon Name="alert-triangle" />
+                    <p>@_deleteError</p>
+                </div>
+            }
             <div class="modal-card__actions">
                 <button type="button" class="btn btn--secondary" @onclick="CloseDeleteModal">Cancelar</button>
                 <button type="button" class="btn btn--danger" disabled="@_deleting" @onclick="ConfirmDelete">
@@ -120,6 +105,51 @@ private async Task ConfirmDelete()
 }
 
 
-.modal-card__icon--danger { background: rgba(220,38,38,.12); color: #dc2626; }
-.btn--danger { background: #dc2626; color: #fff; border: none; }
-.btn--danger:hover { background: #b91c1c; }
+
+
+
+
+private bool _showDeleteModal;
+private bool _deleting;
+private string? _deleteError;
+
+private void OpenDeleteModal()
+{
+    _deleteError = null;
+    _showDeleteModal = true;
+}
+
+private void CloseDeleteModal() => _showDeleteModal = false;
+
+private async Task ConfirmDelete()
+{
+    if (!await CheckOwnershipAsync())
+    {
+        _deleteError = "Ya no tenés permiso para eliminar este artículo.";
+        return;
+    }
+
+    _deleting = true;
+    StateHasChanged();
+
+    var ok = await Data.DeleteArticleAsync(ArticleId);
+
+    _deleting = false;
+
+    if (!ok)
+    {
+        _deleteError = "No se pudo eliminar el artículo.";
+        StateHasChanged();
+        return;
+    }
+
+    _showDeleteModal = false;
+    Toast.Show("Artículo eliminado.", ToastVariant.Success, "trash-2");
+    Nav.NavigateTo("/perfil");
+}
+
+
+
+
+.btn--delete-article { margin-left: auto; }
+.form-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
