@@ -1,107 +1,25 @@
-<div class="form-actions">
-    <a class="btn btn--secondary" href="/articulos">Cancelar</a>
-
-    @if (_original.Status == ArticleStatus.Draft)
-    {
-        <button type="button" class="btn btn--ghost" @onclick="() => Save(ArticleStatus.Draft)">
-            <Icon Name="save" /> Guardar como borrador
-        </button>
-        <button type="button" class="btn btn--outline" @onclick="OpenReviewModal">
-            <Icon Name="help-circle" /> Enviar a revisión
-        </button>
-        <button type="button" class="btn btn--primary" @onclick="() => Save(ArticleStatus.Published)">
-            <Icon Name="check-circle" /> Publicar
-        </button>
-    }
-    else if (_original.Status == ArticleStatus.InReview)
-    {
-        <button type="button" class="btn btn--ghost" @onclick="() => Save(ArticleStatus.InReview)">
-            <Icon Name="save" /> Guardar cambios
-        </button>
-
-        @if (_isAdmin)
-        {
-            <button type="button" class="btn btn--outline btn--danger" @onclick="Reject">
-                <Icon Name="corner-up-left" /> Devolver a borrador
-            </button>
-            <button type="button" class="btn btn--success" @onclick="Approve">
-                <Icon Name="check-circle" /> Aprobar y publicar
-            </button>
-        }
-        else
-        {
-            <span class="form-hint form-hint--waiting"><Icon Name="clock" /> Esperando aprobación de un administrador.</span>
-        }
-    }
-    else
-    {
-        <button type="button" class="btn btn--primary" @onclick="() => Save(ArticleStatus.Published)">
-            <Icon Name="check-circle" /> Guardar cambios
-        </button>
-    }
-
-    <button type="button" class="btn btn--ghost btn--danger btn--delete-article" @onclick="OpenDeleteModal">
-        <Icon Name="trash-2" /> Eliminar artículo
-    </button>
-</div>
-
-
-
-
-
-
-
-@if (_showReviewModal)
+public async Task<Guid> GetCurrentAuthorIdAsync()
 {
-    <div class="modal-overlay" @onclick="CloseReviewModal">
-        <div class="modal-card" @onclick:stopPropagation="true">
-            <div class="modal-card__icon modal-card__icon--warning">
-                <Icon Name="help-circle" />
-            </div>
-            <h3>Enviar a revisión</h3>
-            <p>Contále a un administrador por qué considerás que este artículo necesita revisión antes de publicarse (por ejemplo, si podría contener información sensible o confidencial).</p>
-            <textarea class="input" rows="3" placeholder="Ej: No estoy seguro si este procedimiento es apto para difusión pública..."
-                      @bind="_reviewReason" @bind:event="oninput"></textarea>
-            <div class="modal-card__actions">
-                <button type="button" class="btn btn--secondary" @onclick="CloseReviewModal">Cancelar</button>
-                <button type="button" class="btn btn--primary" disabled="@(string.IsNullOrWhiteSpace(_reviewReason) || _sendingReview)"
-                        @onclick="ConfirmSendToReview">
-                    @if (_sendingReview) { <span class="spinner"></span> } else { <Icon Name="send" /> }
-                    Enviar a revisión
-                </button>
-            </div>
-        </div>
-    </div>
-}
+    var securityUserId = await GetCurrentUserIdAsync(); // ya lee ClaimTypes.NameIdentifier, se reutiliza
 
-@if (_showDeleteModal)
-{
-    <div class="modal-overlay" @onclick="CloseDeleteModal">
-        <div class="modal-card" @onclick:stopPropagation="true">
-            <div class="modal-card__icon modal-card__icon--danger">
-                <Icon Name="alert-triangle" />
-            </div>
-            <h3>¿Eliminar este artículo?</h3>
-            <p>
-                "@_original?.Title" se eliminará permanentemente, junto con su contenido, etiquetas,
-                portada, favoritos y versiones asociadas. Esta acción no se puede deshacer.
-            </p>
-            @if (!string.IsNullOrEmpty(_deleteError))
-            {
-                <div class="callout callout--danger">
-                    <Icon Name="alert-triangle" />
-                    <p>@_deleteError</p>
-                </div>
-            }
-            <div class="modal-card__actions">
-                <button type="button" class="btn btn--secondary" @onclick="CloseDeleteModal">Cancelar</button>
-                <button type="button" class="btn btn--danger" disabled="@_deleting" @onclick="ConfirmDelete">
-                    @if (_deleting) { <span class="spinner"></span> } else { <Icon Name="trash-2" /> }
-                    Sí, eliminar
-                </button>
-            </div>
-        </div>
-    </div>
+    var authState = await _authStateProvider.GetAuthenticationStateAsync();
+    var user = authState.User;
+    var userName = user.Identity?.Name ?? "Usuario Anónimo";
+    var userEmail = user.FindFirst(System.Security.Claims.ClaimTypes.Email)?.Value ?? "anonimo@corp.com";
+
+    var authors = await _authors.GetAuthorsAsync();
+    var author = authors.FirstOrDefault(a => a.FullName == userName)
+        ?? await _authors.CreateAuthorAsync(userName, userEmail);
+
+    // Backfill: si el Author existe pero nunca quedó vinculado al login actual
+    // (o el login cambió), lo sincronizamos para que ArticleOwnershipHandler funcione.
+    if (securityUserId != Guid.Empty && author.SecurityUserId != securityUserId)
+    {
+        await _authors.LinkSecurityUserAsync(author.Id, securityUserId);
+        author.SecurityUserId = securityUserId;
+    }
+
+    return author.Id;
 }
 
 
@@ -109,47 +27,125 @@
 
 
 
-private bool _showDeleteModal;
-private bool _deleting;
-private string? _deleteError;
 
-private void OpenDeleteModal()
+
+// En la interfaz de autores (IAuthorDataService / IAuthorData, la que uses)
+Task LinkSecurityUserAsync(Guid authorId, Guid securityUserId);
+
+
+
+
+// En su implementación
+public async Task LinkSecurityUserAsync(Guid authorId, Guid securityUserId)
 {
-    _deleteError = null;
-    _showDeleteModal = true;
+    await using var db = await _dbFactory.CreateDbContextAsync();
+    var author = await db.Authors.FirstOrDefaultAsync(a => a.Id == authorId);
+    if (author is null) return;
+
+    author.SecurityUserId = securityUserId;
+    await db.SaveChangesAsync();
 }
 
-private void CloseDeleteModal() => _showDeleteModal = false;
 
-private async Task ConfirmDelete()
+
+private bool _isLoading = true;
+
+protected override async Task OnInitializedAsync()
 {
-    if (!await CheckOwnershipAsync())
+    _original = await Data.GetArticleByIdAsync(ArticleId);
+    if (_original is null)
     {
-        _deleteError = "Ya no tenés permiso para eliminar este artículo.";
+        _notFound = true;
+        _isLoading = false;
         return;
     }
 
-    _deleting = true;
-    StateHasChanged();
-
-    var ok = await Data.DeleteArticleAsync(ArticleId);
-
-    _deleting = false;
-
-    if (!ok)
+    _canEdit = await CheckOwnershipAsync();
+    if (!_canEdit)
     {
-        _deleteError = "No se pudo eliminar el artículo.";
-        StateHasChanged();
+        _isLoading = false;
         return;
     }
 
-    _showDeleteModal = false;
-    Toast.Show("Artículo eliminado.", ToastVariant.Success, "trash-2");
-    Nav.NavigateTo("/perfil");
+    _isAdmin = await SecurityService.IsAdminAsync();
+
+    _categories = (await Categories.GetCategoriesAsync()).OrderBy(c => c.Name).ToList();
+    _tags = (await Tags.GetPopularTagsAsync(40)).OrderBy(t => t.Name).ToList();
+
+    _breadcrumb = new()
+    {
+        new("Inicio", "/"),
+        new("Artículos", "/articulos"),
+        new(_original.Title, null)
+    };
+
+    _model.Title = _original.Title;
+    _model.Summary = _original.Summary;
+    _model.CategoryId = _original.CategoryId;
+    _model.AuthorId = _original.AuthorId;
+    _model.TagIds = new List<Guid>(_original.TagIds);
+    _model.CoverImageMediaId = _original.CoverImageMediaId;
+    _model.IsFeatured = _original.IsFeatured;
+
+    if (_original.CoverImageMediaId is Guid mediaId)
+    {
+        var media = await Media.GetMediaFileAsync(mediaId);
+        _coverPreviewUrl = media?.Url;
+    }
+
+    _isLoading = false;
 }
 
 
 
 
-.btn--delete-article { margin-left: auto; }
-.form-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+@if (_isLoading)
+{
+    <div class="page-loading">
+        <div class="skeleton skeleton--title"></div>
+        <div class="skeleton skeleton--line"></div>
+        <div class="skeleton skeleton--line" style="width:60%"></div>
+        <div class="skeleton skeleton--block"></div>
+    </div>
+}
+else if (_notFound)
+{
+    <div class="empty-state">
+        <Icon Name="file-text" Class="empty-state__icon" />
+        <h3>No encontramos este artículo</h3>
+        <a class="btn btn--primary" href="/articulos">Volver a Artículos</a>
+    </div>
+}
+else if (!_canEdit)
+{
+    <div class="empty-state">
+        <Icon Name="shield-off" Class="empty-state__icon" />
+        <h3>No podés editar este artículo</h3>
+        <p>Solo el autor original o un administrador de contenido pueden modificarlo.</p>
+        <a class="btn btn--primary" href="/articulos">Volver a Artículos</a>
+    </div>
+}
+else
+{
+    <Breadcrumb Items="_breadcrumb" />
+    @* ...resto del formulario, sin cambios... *@
+}
+
+
+
+
+.page-loading { max-width: 720px; }
+.skeleton {
+    background: linear-gradient(90deg, #eee 25%, #f5f5f5 50%, #eee 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.4s ease-in-out infinite;
+    border-radius: 8px;
+}
+.skeleton--title { height: 28px; width: 40%; margin-bottom: 18px; }
+.skeleton--line { height: 14px; width: 80%; margin-bottom: 10px; }
+.skeleton--block { height: 220px; width: 100%; margin-top: 20px; border-radius: 12px; }
+
+@keyframes shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+}
