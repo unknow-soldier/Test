@@ -13,25 +13,13 @@ public class CommentStatus
     public string Name { get; set; } = string.Empty;
 }
 
-public class ArticleComment
-{
-    public Guid Id { get; set; }
-    public Guid ArticleId { get; set; }
-    public Guid UserId { get; set; }
-    public Guid? ParentCommentId { get; set; }
-    public string Content { get; set; } = string.Empty;
-    public DateTime CreatedAt { get; set; }
-    public DateTime? UpdatedAt { get; set; }
 
-    public int StatusId { get; set; } = (int)CommentStatusEnum.Active;
-    public CommentStatus? Status { get; set; }
-    // Se elimina IsDeleted
 
-    public Article? Article { get; set; }
-    public Security.SecurityUser? User { get; set; }
-    public ArticleComment? ParentComment { get; set; }
-    public ICollection<ArticleComment> Replies { get; set; } = new List<ArticleComment>();
-}
+
+
+
+
+namespace CorpWiki.Domain.Entities;
 
 public class CommentAuditLog
 {
@@ -52,7 +40,21 @@ public class CommentAuditLog
 
 
 
+// QUITAR:
+public bool IsDeleted { get; set; } = false;
 
+// AGREGAR:
+public int StatusId { get; set; } = (int)CommentStatusEnum.Active;
+public CommentStatus? Status { get; set; }
+
+
+
+
+
+
+using CorpWiki.Domain.Entities;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
 namespace CorpWiki.Infrastructure.Persistence.Configurations;
 
@@ -71,6 +73,17 @@ public class CommentStatusConfiguration : IEntityTypeConfiguration<CommentStatus
             new CommentStatus { Id = 3, Name = "Deleted" });
     }
 }
+
+
+
+
+
+
+using CorpWiki.Domain.Entities;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+
+namespace CorpWiki.Infrastructure.Persistence.Configurations;
 
 public class CommentAuditLogConfiguration : IEntityTypeConfiguration<CommentAuditLog>
 {
@@ -95,10 +108,9 @@ public class CommentAuditLogConfiguration : IEntityTypeConfiguration<CommentAudi
 
 
 
-
-
-
-builder.Property(x => x.StatusId).IsRequired().HasDefaultValue(1);
+builder.Property(x => x.StatusId)
+    .IsRequired()
+    .HasDefaultValue(1);
 
 builder.HasOne(x => x.Status)
     .WithMany()
@@ -110,33 +122,52 @@ builder.HasOne(x => x.Status)
 
 
 
+public DbSet<CommentStatus> CommentStatuses { get; set; }
+public DbSet<CommentAuditLog> CommentAuditLogs { get; set; }
+
+
+
+
+dotnet ef migrations add AddCommentStatusesAndAuditLog --project CorpWiki.Infrastructure --startup-project CorpWiki.Web
+
 
 
 protected override void Up(MigrationBuilder migrationBuilder)
 {
+    // 1. Tabla comment_statuses (EF probablemente ya la generó aquí o cerca)
     migrationBuilder.CreateTable(
         name: "comment_statuses",
         columns: table => new
         {
-            Id = table.Column<int>(nullable: false),
-            Name = table.Column<string>(maxLength: 50, nullable: false)
+            Id = table.Column<int>(type: "int", nullable: false),
+            Name = table.Column<string>(type: "nvarchar(50)", maxLength: 50, nullable: false)
         },
         constraints: table => table.PrimaryKey("PK_comment_statuses", x => x.Id));
 
-    migrationBuilder.InsertData("comment_statuses", new[] { "Id", "Name" },
-        new object[,] { { 1, "Active" }, { 2, "Edited" }, { 3, "Deleted" } });
+    // 2. Seed (EF suele generar esto automático vía HasData, verifícalo)
+    migrationBuilder.InsertData(
+        table: "comment_statuses",
+        columns: new[] { "Id", "Name" },
+        values: new object[,] { { 1, "Active" }, { 2, "Edited" }, { 3, "Deleted" } });
 
+    // 3. Agregar StatusId con default temporal (EF ya debería generar esto)
     migrationBuilder.AddColumn<int>(
-        name: "StatusId", table: "article_comments",
-        type: "int", nullable: false, defaultValue: 1);
+        name: "StatusId",
+        table: "article_comments",
+        type: "int",
+        nullable: false,
+        defaultValue: 1);
 
+    // 4. TÚ AGREGAS ESTO A MANO — EF no lo genera nunca:
     migrationBuilder.Sql(@"
         UPDATE article_comments SET StatusId = 3 WHERE IsDeleted = 1;
         UPDATE article_comments SET StatusId = 2 WHERE IsDeleted = 0 AND UpdatedAt IS NOT NULL;
     ");
 
+    // 5. Borrar IsDeleted (EF ya lo genera, solo verifica que quede DESPUÉS del Sql de arriba)
     migrationBuilder.DropColumn(name: "IsDeleted", table: "article_comments");
 
+    // 6. Índice y FK sobre StatusId (EF ya lo genera)
     migrationBuilder.CreateIndex("IX_article_comments_StatusId", "article_comments", "StatusId");
     migrationBuilder.AddForeignKey(
         name: "FK_article_comments_comment_statuses_StatusId",
@@ -144,18 +175,18 @@ protected override void Up(MigrationBuilder migrationBuilder)
         principalTable: "comment_statuses", principalColumn: "Id",
         onDelete: ReferentialAction.Restrict);
 
-    // Tabla de auditoría
+    // 7. Tabla comment_audit_log (EF ya la genera, verifica el FK con Restrict)
     migrationBuilder.CreateTable(
         name: "comment_audit_log",
         columns: table => new
         {
-            Id = table.Column<Guid>(nullable: false),
-            CommentId = table.Column<Guid>(nullable: false),
-            PreviousStatusId = table.Column<int>(nullable: false),
-            NewStatusId = table.Column<int>(nullable: false),
+            Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+            CommentId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+            PreviousStatusId = table.Column<int>(type: "int", nullable: false),
+            NewStatusId = table.Column<int>(type: "int", nullable: false),
             PreviousContent = table.Column<string>(type: "nvarchar(max)", nullable: true),
-            ChangedByUserId = table.Column<Guid>(nullable: false),
-            ChangedAt = table.Column<DateTime>(nullable: false)
+            ChangedByUserId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+            ChangedAt = table.Column<DateTime>(type: "datetime2", nullable: false)
         },
         constraints: table =>
         {
@@ -171,192 +202,3 @@ protected override void Up(MigrationBuilder migrationBuilder)
     migrationBuilder.CreateIndex("IX_comment_audit_log_CommentId", "comment_audit_log", "CommentId");
     migrationBuilder.CreateIndex("IX_comment_audit_log_ChangedAt", "comment_audit_log", "ChangedAt");
 }
-
-
-
-
-
-
-
-
-
-public class CommentDto
-{
-    public Guid Id { get; set; }
-    public Guid? ParentCommentId { get; set; }
-    public Guid UserId { get; set; }
-    public string AuthorName { get; set; } = string.Empty;
-    public string AuthorInitials { get; set; } = string.Empty;
-    public string AuthorColorFrom { get; set; } = string.Empty;
-    public string AuthorColorTo { get; set; } = string.Empty;
-    public string Content { get; set; } = string.Empty;
-    public DateTime CreatedAt { get; set; }
-    public int LikesCount { get; set; }
-    public bool IsLikedByCurrentUser { get; set; }
-    public bool CanEditOrDelete { get; set; }
-    public string? ReplyingToAuthorName { get; set; }
-    public List<CommentDto> Replies { get; set; } = new();
-
-    public int StatusId { get; set; }
-
-    // Propiedades calculadas para el frontend — cero lógica en el componente
-    public bool IsDeleted => StatusId == (int)CommentStatusEnum.Deleted;
-    public bool IsEdited => StatusId == (int)CommentStatusEnum.Edited;
-
-    // Un comentario borrado se oculta SOLO si no tiene hijos (recursivo:
-    // basta con mirar Replies.Count, porque un hijo borrado con nietos
-    // sigue estando en Replies igualmente).
-    public bool ShouldRender => !IsDeleted || Replies.Count > 0;
-
-    public CommentDto Clone() => (CommentDto)MemberwiseClone();
-}
-
-
-
-
-
-
-
-
-private async Task LogAuditAsync(ArticleComment comment, int newStatusId, Guid changedByUserId)
-{
-    _db.CommentAuditLogs.Add(new CommentAuditLog
-    {
-        Id = Guid.NewGuid(),
-        CommentId = comment.Id,
-        PreviousStatusId = comment.StatusId,
-        NewStatusId = newStatusId,
-        PreviousContent = comment.Content,
-        ChangedByUserId = changedByUserId,
-        ChangedAt = DateTime.UtcNow
-    });
-}
-
-public async Task UpdateCommentAsync(Guid commentId, string newContent, Guid currentUserId)
-{
-    var comment = await _db.ArticleComments.FirstOrDefaultAsync(c => c.Id == commentId)
-        ?? throw new InvalidOperationException("Comentario no encontrado");
-
-    if (comment.StatusId == (int)CommentStatusEnum.Deleted)
-        throw new InvalidOperationException("No se puede editar un comentario eliminado");
-
-    await LogAuditAsync(comment, (int)CommentStatusEnum.Edited, currentUserId);
-
-    comment.Content = newContent;
-    comment.StatusId = (int)CommentStatusEnum.Edited;
-    comment.UpdatedAt = DateTime.UtcNow;
-
-    await _db.SaveChangesAsync();
-}
-
-public async Task DeleteCommentAsync(Guid commentId, Guid currentUserId)
-{
-    var comment = await _db.ArticleComments.FirstOrDefaultAsync(c => c.Id == commentId)
-        ?? throw new InvalidOperationException("Comentario no encontrado");
-
-    if (comment.StatusId == (int)CommentStatusEnum.Deleted) return; // idempotente
-
-    await LogAuditAsync(comment, (int)CommentStatusEnum.Deleted, currentUserId);
-
-    // NO se borra la fila. Content, UserId, ParentCommentId quedan intactos.
-    comment.StatusId = (int)CommentStatusEnum.Deleted;
-
-    await _db.SaveChangesAsync();
-}
-
-
-
-
-
-
-
-
-
-// Antes: event Action<Guid, Guid[]> CommentDeleted;  (rompía el árbol)
-// Ahora:
-event Func<Guid, Guid, int, Task>? CommentStatusChanged; // (articleId, commentId, newStatusId)
-
-
-
-
-
-
-
-
-
-private Task OnCommentStatusChangedAsync(Guid articleId, Guid commentId, int newStatusId)
-{
-    if (_article is null || articleId != _article.Id) return Task.CompletedTask;
-
-    return InvokeAsync(() =>
-    {
-        var target = _comments.FirstOrDefault(c => c.Id == commentId)
-                     ?? _comments.SelectMany(c => c.Replies).FirstOrDefault(r => r.Id == commentId);
-
-        if (target != null)
-        {
-            target.StatusId = newStatusId;
-            // Si el propio comentario raíz queda como hoja borrada, se filtra
-            // en el markup con ShouldRender — no hace falta quitarlo aquí.
-        }
-        StateHasChanged();
-    });
-}
-
-
-
-
-
-
-
-
-<div class="comments-list">
-    @foreach (var c in _comments.Where(c => c.ShouldRender))
-    {
-        <CommentCard Id="@c.Id"
-                     ParentCommentId="@c.ParentCommentId"
-                     RootCommentId="null"
-                     AuthorName="@c.AuthorName"
-                     AuthorInitials="@c.AuthorInitials"
-                     AuthorColorFrom="@c.AuthorColorFrom"
-                     AuthorColorTo="@c.AuthorColorTo"
-                     Content="@c.Content"
-                     IsDeleted="@c.IsDeleted"
-                     IsEdited="@c.IsEdited"
-                     CreatedAt="@c.CreatedAt"
-                     Likes="@c.LikesCount"
-                     IsLiked="@c.IsLikedByCurrentUser"
-                     CanEditOrDelete="@c.CanEditOrDelete && !c.IsDeleted"
-                     ReplyingToAuthorName="@c.ReplyingToAuthorName"
-                     Replies="@c.Replies.Where(r => r.ShouldRender).ToList()"
-                     OnLike="HandleCommentLike"
-                     OnReply="HandleCommentReply"
-                     OnEdit="HandleCommentEdit"
-                     OnDelete="HandleCommentDelete" />
-    }
-</div>
-
-
-
-
-@if (IsDeleted)
-{
-    <div class="comment comment--deleted">
-        <p class="comment__placeholder"><em>Este comentario ha sido eliminado</em></p>
-        @if (Replies.Count > 0)
-        {
-            <div class="comment__replies">
-                @foreach (var r in Replies)
-                {
-                    <!-- recursión normal de CommentCard -->
-                }
-            </div>
-        }
-    </div>
-}
-else
-{
-    <!-- render normal + badge "(editado)" si IsEdited -->
-}
-
-
