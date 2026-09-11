@@ -1,151 +1,362 @@
-public async Task<Guid> GetCurrentAuthorIdAsync()
+namespace CorpWiki.Domain.Entities;
+
+public enum CommentStatusEnum
 {
-    var securityUserId = await GetCurrentUserIdAsync(); // ya lee ClaimTypes.NameIdentifier, se reutiliza
+    Active = 1,
+    Edited = 2,
+    Deleted = 3
+}
 
-    var authState = await _authStateProvider.GetAuthenticationStateAsync();
-    var user = authState.User;
-    var userName = user.Identity?.Name ?? "Usuario Anónimo";
-    var userEmail = user.FindFirst(System.Security.Claims.ClaimTypes.Email)?.Value ?? "anonimo@corp.com";
+public class CommentStatus
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+}
 
-    var authors = await _authors.GetAuthorsAsync();
-    var author = authors.FirstOrDefault(a => a.FullName == userName)
-        ?? await _authors.CreateAuthorAsync(userName, userEmail);
+public class ArticleComment
+{
+    public Guid Id { get; set; }
+    public Guid ArticleId { get; set; }
+    public Guid UserId { get; set; }
+    public Guid? ParentCommentId { get; set; }
+    public string Content { get; set; } = string.Empty;
+    public DateTime CreatedAt { get; set; }
+    public DateTime? UpdatedAt { get; set; }
 
-    // Backfill: si el Author existe pero nunca quedó vinculado al login actual
-    // (o el login cambió), lo sincronizamos para que ArticleOwnershipHandler funcione.
-    if (securityUserId != Guid.Empty && author.SecurityUserId != securityUserId)
+    public int StatusId { get; set; } = (int)CommentStatusEnum.Active;
+    public CommentStatus? Status { get; set; }
+    // Se elimina IsDeleted
+
+    public Article? Article { get; set; }
+    public Security.SecurityUser? User { get; set; }
+    public ArticleComment? ParentComment { get; set; }
+    public ICollection<ArticleComment> Replies { get; set; } = new List<ArticleComment>();
+}
+
+public class CommentAuditLog
+{
+    public Guid Id { get; set; }
+    public Guid CommentId { get; set; }
+    public int PreviousStatusId { get; set; }
+    public int NewStatusId { get; set; }
+    public string? PreviousContent { get; set; }
+    public Guid ChangedByUserId { get; set; }
+    public DateTime ChangedAt { get; set; }
+
+    public ArticleComment? Comment { get; set; }
+}
+
+
+
+
+
+
+
+
+
+namespace CorpWiki.Infrastructure.Persistence.Configurations;
+
+public class CommentStatusConfiguration : IEntityTypeConfiguration<CommentStatus>
+{
+    public void Configure(EntityTypeBuilder<CommentStatus> builder)
     {
-        await _authors.LinkSecurityUserAsync(author.Id, securityUserId);
-        author.SecurityUserId = securityUserId;
+        builder.ToTable("comment_statuses");
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).ValueGeneratedNever();
+        builder.Property(x => x.Name).IsRequired().HasMaxLength(50);
+
+        builder.HasData(
+            new CommentStatus { Id = 1, Name = "Active" },
+            new CommentStatus { Id = 2, Name = "Edited" },
+            new CommentStatus { Id = 3, Name = "Deleted" });
     }
-
-    return author.Id;
 }
 
-
-
-
-
-
-
-
-// En la interfaz de autores (IAuthorDataService / IAuthorData, la que uses)
-Task LinkSecurityUserAsync(Guid authorId, Guid securityUserId);
-
-
-
-
-// En su implementación
-public async Task LinkSecurityUserAsync(Guid authorId, Guid securityUserId)
+public class CommentAuditLogConfiguration : IEntityTypeConfiguration<CommentAuditLog>
 {
-    await using var db = await _dbFactory.CreateDbContextAsync();
-    var author = await db.Authors.FirstOrDefaultAsync(a => a.Id == authorId);
-    if (author is null) return;
-
-    author.SecurityUserId = securityUserId;
-    await db.SaveChangesAsync();
-}
-
-
-
-private bool _isLoading = true;
-
-protected override async Task OnInitializedAsync()
-{
-    _original = await Data.GetArticleByIdAsync(ArticleId);
-    if (_original is null)
+    public void Configure(EntityTypeBuilder<CommentAuditLog> builder)
     {
-        _notFound = true;
-        _isLoading = false;
-        return;
+        builder.ToTable("comment_audit_log");
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.PreviousContent).HasColumnType("nvarchar(max)");
+
+        builder.HasOne(x => x.Comment)
+            .WithMany()
+            .HasForeignKey(x => x.CommentId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        builder.HasIndex(x => x.CommentId);
+        builder.HasIndex(x => x.ChangedAt);
     }
+}
 
-    _canEdit = await CheckOwnershipAsync();
-    if (!_canEdit)
+
+
+
+
+
+
+
+
+builder.Property(x => x.StatusId).IsRequired().HasDefaultValue(1);
+
+builder.HasOne(x => x.Status)
+    .WithMany()
+    .HasForeignKey(x => x.StatusId)
+    .OnDelete(DeleteBehavior.Restrict);
+
+
+
+
+
+
+
+
+protected override void Up(MigrationBuilder migrationBuilder)
+{
+    migrationBuilder.CreateTable(
+        name: "comment_statuses",
+        columns: table => new
+        {
+            Id = table.Column<int>(nullable: false),
+            Name = table.Column<string>(maxLength: 50, nullable: false)
+        },
+        constraints: table => table.PrimaryKey("PK_comment_statuses", x => x.Id));
+
+    migrationBuilder.InsertData("comment_statuses", new[] { "Id", "Name" },
+        new object[,] { { 1, "Active" }, { 2, "Edited" }, { 3, "Deleted" } });
+
+    migrationBuilder.AddColumn<int>(
+        name: "StatusId", table: "article_comments",
+        type: "int", nullable: false, defaultValue: 1);
+
+    migrationBuilder.Sql(@"
+        UPDATE article_comments SET StatusId = 3 WHERE IsDeleted = 1;
+        UPDATE article_comments SET StatusId = 2 WHERE IsDeleted = 0 AND UpdatedAt IS NOT NULL;
+    ");
+
+    migrationBuilder.DropColumn(name: "IsDeleted", table: "article_comments");
+
+    migrationBuilder.CreateIndex("IX_article_comments_StatusId", "article_comments", "StatusId");
+    migrationBuilder.AddForeignKey(
+        name: "FK_article_comments_comment_statuses_StatusId",
+        table: "article_comments", column: "StatusId",
+        principalTable: "comment_statuses", principalColumn: "Id",
+        onDelete: ReferentialAction.Restrict);
+
+    // Tabla de auditoría
+    migrationBuilder.CreateTable(
+        name: "comment_audit_log",
+        columns: table => new
+        {
+            Id = table.Column<Guid>(nullable: false),
+            CommentId = table.Column<Guid>(nullable: false),
+            PreviousStatusId = table.Column<int>(nullable: false),
+            NewStatusId = table.Column<int>(nullable: false),
+            PreviousContent = table.Column<string>(type: "nvarchar(max)", nullable: true),
+            ChangedByUserId = table.Column<Guid>(nullable: false),
+            ChangedAt = table.Column<DateTime>(nullable: false)
+        },
+        constraints: table =>
+        {
+            table.PrimaryKey("PK_comment_audit_log", x => x.Id);
+            table.ForeignKey(
+                name: "FK_comment_audit_log_article_comments_CommentId",
+                column: x => x.CommentId,
+                principalTable: "article_comments",
+                principalColumn: "Id",
+                onDelete: ReferentialAction.Restrict);
+        });
+
+    migrationBuilder.CreateIndex("IX_comment_audit_log_CommentId", "comment_audit_log", "CommentId");
+    migrationBuilder.CreateIndex("IX_comment_audit_log_ChangedAt", "comment_audit_log", "ChangedAt");
+}
+
+
+
+
+
+
+
+
+
+public class CommentDto
+{
+    public Guid Id { get; set; }
+    public Guid? ParentCommentId { get; set; }
+    public Guid UserId { get; set; }
+    public string AuthorName { get; set; } = string.Empty;
+    public string AuthorInitials { get; set; } = string.Empty;
+    public string AuthorColorFrom { get; set; } = string.Empty;
+    public string AuthorColorTo { get; set; } = string.Empty;
+    public string Content { get; set; } = string.Empty;
+    public DateTime CreatedAt { get; set; }
+    public int LikesCount { get; set; }
+    public bool IsLikedByCurrentUser { get; set; }
+    public bool CanEditOrDelete { get; set; }
+    public string? ReplyingToAuthorName { get; set; }
+    public List<CommentDto> Replies { get; set; } = new();
+
+    public int StatusId { get; set; }
+
+    // Propiedades calculadas para el frontend — cero lógica en el componente
+    public bool IsDeleted => StatusId == (int)CommentStatusEnum.Deleted;
+    public bool IsEdited => StatusId == (int)CommentStatusEnum.Edited;
+
+    // Un comentario borrado se oculta SOLO si no tiene hijos (recursivo:
+    // basta con mirar Replies.Count, porque un hijo borrado con nietos
+    // sigue estando en Replies igualmente).
+    public bool ShouldRender => !IsDeleted || Replies.Count > 0;
+
+    public CommentDto Clone() => (CommentDto)MemberwiseClone();
+}
+
+
+
+
+
+
+
+
+private async Task LogAuditAsync(ArticleComment comment, int newStatusId, Guid changedByUserId)
+{
+    _db.CommentAuditLogs.Add(new CommentAuditLog
     {
-        _isLoading = false;
-        return;
+        Id = Guid.NewGuid(),
+        CommentId = comment.Id,
+        PreviousStatusId = comment.StatusId,
+        NewStatusId = newStatusId,
+        PreviousContent = comment.Content,
+        ChangedByUserId = changedByUserId,
+        ChangedAt = DateTime.UtcNow
+    });
+}
+
+public async Task UpdateCommentAsync(Guid commentId, string newContent, Guid currentUserId)
+{
+    var comment = await _db.ArticleComments.FirstOrDefaultAsync(c => c.Id == commentId)
+        ?? throw new InvalidOperationException("Comentario no encontrado");
+
+    if (comment.StatusId == (int)CommentStatusEnum.Deleted)
+        throw new InvalidOperationException("No se puede editar un comentario eliminado");
+
+    await LogAuditAsync(comment, (int)CommentStatusEnum.Edited, currentUserId);
+
+    comment.Content = newContent;
+    comment.StatusId = (int)CommentStatusEnum.Edited;
+    comment.UpdatedAt = DateTime.UtcNow;
+
+    await _db.SaveChangesAsync();
+}
+
+public async Task DeleteCommentAsync(Guid commentId, Guid currentUserId)
+{
+    var comment = await _db.ArticleComments.FirstOrDefaultAsync(c => c.Id == commentId)
+        ?? throw new InvalidOperationException("Comentario no encontrado");
+
+    if (comment.StatusId == (int)CommentStatusEnum.Deleted) return; // idempotente
+
+    await LogAuditAsync(comment, (int)CommentStatusEnum.Deleted, currentUserId);
+
+    // NO se borra la fila. Content, UserId, ParentCommentId quedan intactos.
+    comment.StatusId = (int)CommentStatusEnum.Deleted;
+
+    await _db.SaveChangesAsync();
+}
+
+
+
+
+
+
+
+
+
+// Antes: event Action<Guid, Guid[]> CommentDeleted;  (rompía el árbol)
+// Ahora:
+event Func<Guid, Guid, int, Task>? CommentStatusChanged; // (articleId, commentId, newStatusId)
+
+
+
+
+
+
+
+
+
+private Task OnCommentStatusChangedAsync(Guid articleId, Guid commentId, int newStatusId)
+{
+    if (_article is null || articleId != _article.Id) return Task.CompletedTask;
+
+    return InvokeAsync(() =>
+    {
+        var target = _comments.FirstOrDefault(c => c.Id == commentId)
+                     ?? _comments.SelectMany(c => c.Replies).FirstOrDefault(r => r.Id == commentId);
+
+        if (target != null)
+        {
+            target.StatusId = newStatusId;
+            // Si el propio comentario raíz queda como hoja borrada, se filtra
+            // en el markup con ShouldRender — no hace falta quitarlo aquí.
+        }
+        StateHasChanged();
+    });
+}
+
+
+
+
+
+
+
+
+<div class="comments-list">
+    @foreach (var c in _comments.Where(c => c.ShouldRender))
+    {
+        <CommentCard Id="@c.Id"
+                     ParentCommentId="@c.ParentCommentId"
+                     RootCommentId="null"
+                     AuthorName="@c.AuthorName"
+                     AuthorInitials="@c.AuthorInitials"
+                     AuthorColorFrom="@c.AuthorColorFrom"
+                     AuthorColorTo="@c.AuthorColorTo"
+                     Content="@c.Content"
+                     IsDeleted="@c.IsDeleted"
+                     IsEdited="@c.IsEdited"
+                     CreatedAt="@c.CreatedAt"
+                     Likes="@c.LikesCount"
+                     IsLiked="@c.IsLikedByCurrentUser"
+                     CanEditOrDelete="@c.CanEditOrDelete && !c.IsDeleted"
+                     ReplyingToAuthorName="@c.ReplyingToAuthorName"
+                     Replies="@c.Replies.Where(r => r.ShouldRender).ToList()"
+                     OnLike="HandleCommentLike"
+                     OnReply="HandleCommentReply"
+                     OnEdit="HandleCommentEdit"
+                     OnDelete="HandleCommentDelete" />
     }
-
-    _isAdmin = await SecurityService.IsAdminAsync();
-
-    _categories = (await Categories.GetCategoriesAsync()).OrderBy(c => c.Name).ToList();
-    _tags = (await Tags.GetPopularTagsAsync(40)).OrderBy(t => t.Name).ToList();
-
-    _breadcrumb = new()
-    {
-        new("Inicio", "/"),
-        new("Artículos", "/articulos"),
-        new(_original.Title, null)
-    };
-
-    _model.Title = _original.Title;
-    _model.Summary = _original.Summary;
-    _model.CategoryId = _original.CategoryId;
-    _model.AuthorId = _original.AuthorId;
-    _model.TagIds = new List<Guid>(_original.TagIds);
-    _model.CoverImageMediaId = _original.CoverImageMediaId;
-    _model.IsFeatured = _original.IsFeatured;
-
-    if (_original.CoverImageMediaId is Guid mediaId)
-    {
-        var media = await Media.GetMediaFileAsync(mediaId);
-        _coverPreviewUrl = media?.Url;
-    }
-
-    _isLoading = false;
-}
+</div>
 
 
 
 
-@if (_isLoading)
+@if (IsDeleted)
 {
-    <div class="page-loading">
-        <div class="skeleton skeleton--title"></div>
-        <div class="skeleton skeleton--line"></div>
-        <div class="skeleton skeleton--line" style="width:60%"></div>
-        <div class="skeleton skeleton--block"></div>
-    </div>
-}
-else if (_notFound)
-{
-    <div class="empty-state">
-        <Icon Name="file-text" Class="empty-state__icon" />
-        <h3>No encontramos este artículo</h3>
-        <a class="btn btn--primary" href="/articulos">Volver a Artículos</a>
-    </div>
-}
-else if (!_canEdit)
-{
-    <div class="empty-state">
-        <Icon Name="shield-off" Class="empty-state__icon" />
-        <h3>No podés editar este artículo</h3>
-        <p>Solo el autor original o un administrador de contenido pueden modificarlo.</p>
-        <a class="btn btn--primary" href="/articulos">Volver a Artículos</a>
+    <div class="comment comment--deleted">
+        <p class="comment__placeholder"><em>Este comentario ha sido eliminado</em></p>
+        @if (Replies.Count > 0)
+        {
+            <div class="comment__replies">
+                @foreach (var r in Replies)
+                {
+                    <!-- recursión normal de CommentCard -->
+                }
+            </div>
+        }
     </div>
 }
 else
 {
-    <Breadcrumb Items="_breadcrumb" />
-    @* ...resto del formulario, sin cambios... *@
+    <!-- render normal + badge "(editado)" si IsEdited -->
 }
 
 
-
-
-.page-loading { max-width: 720px; }
-.skeleton {
-    background: linear-gradient(90deg, #eee 25%, #f5f5f5 50%, #eee 75%);
-    background-size: 200% 100%;
-    animation: shimmer 1.4s ease-in-out infinite;
-    border-radius: 8px;
-}
-.skeleton--title { height: 28px; width: 40%; margin-bottom: 18px; }
-.skeleton--line { height: 14px; width: 80%; margin-bottom: 10px; }
-.skeleton--block { height: 220px; width: 100%; margin-top: 20px; border-radius: 12px; }
-
-@keyframes shimmer {
-    0% { background-position: 200% 0; }
-    100% { background-position: -200% 0; }
-}
