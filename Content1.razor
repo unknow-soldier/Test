@@ -1,204 +1,135 @@
-namespace CorpWiki.Domain.Entities;
+using Microsoft.EntityFrameworkCore.Migrations;
 
-public enum CommentStatusEnum
+#nullable disable
+
+namespace CorpWiki.Infrastructure.Persistence.Migrations
 {
-    Active = 1,
-    Edited = 2,
-    Deleted = 3
-}
-
-public class CommentStatus
-{
-    public int Id { get; set; }
-    public string Name { get; set; } = string.Empty;
-}
-
-
-
-
-
-
-
-namespace CorpWiki.Domain.Entities;
-
-public class CommentAuditLog
-{
-    public Guid Id { get; set; }
-    public Guid CommentId { get; set; }
-    public int PreviousStatusId { get; set; }
-    public int NewStatusId { get; set; }
-    public string? PreviousContent { get; set; }
-    public Guid ChangedByUserId { get; set; }
-    public DateTime ChangedAt { get; set; }
-
-    public ArticleComment? Comment { get; set; }
-}
-
-
-
-
-
-
-
-// QUITAR:
-public bool IsDeleted { get; set; } = false;
-
-// AGREGAR:
-public int StatusId { get; set; } = (int)CommentStatusEnum.Active;
-public CommentStatus? Status { get; set; }
-
-
-
-
-
-
-using CorpWiki.Domain.Entities;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Metadata.Builders;
-
-namespace CorpWiki.Infrastructure.Persistence.Configurations;
-
-public class CommentStatusConfiguration : IEntityTypeConfiguration<CommentStatus>
-{
-    public void Configure(EntityTypeBuilder<CommentStatus> builder)
+    public partial class AddCommentStatusesAndAuditLog : Migration
     {
-        builder.ToTable("comment_statuses");
-        builder.HasKey(x => x.Id);
-        builder.Property(x => x.Id).ValueGeneratedNever();
-        builder.Property(x => x.Name).IsRequired().HasMaxLength(50);
-
-        builder.HasData(
-            new CommentStatus { Id = 1, Name = "Active" },
-            new CommentStatus { Id = 2, Name = "Edited" },
-            new CommentStatus { Id = 3, Name = "Deleted" });
-    }
-}
-
-
-
-
-
-
-using CorpWiki.Domain.Entities;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Metadata.Builders;
-
-namespace CorpWiki.Infrastructure.Persistence.Configurations;
-
-public class CommentAuditLogConfiguration : IEntityTypeConfiguration<CommentAuditLog>
-{
-    public void Configure(EntityTypeBuilder<CommentAuditLog> builder)
-    {
-        builder.ToTable("comment_audit_log");
-        builder.HasKey(x => x.Id);
-        builder.Property(x => x.PreviousContent).HasColumnType("nvarchar(max)");
-
-        builder.HasOne(x => x.Comment)
-            .WithMany()
-            .HasForeignKey(x => x.CommentId)
-            .OnDelete(DeleteBehavior.Restrict);
-
-        builder.HasIndex(x => x.CommentId);
-        builder.HasIndex(x => x.ChangedAt);
-    }
-}
-
-
-
-
-
-
-builder.Property(x => x.StatusId)
-    .IsRequired()
-    .HasDefaultValue(1);
-
-builder.HasOne(x => x.Status)
-    .WithMany()
-    .HasForeignKey(x => x.StatusId)
-    .OnDelete(DeleteBehavior.Restrict);
-
-
-
-
-
-
-public DbSet<CommentStatus> CommentStatuses { get; set; }
-public DbSet<CommentAuditLog> CommentAuditLogs { get; set; }
-
-
-
-
-dotnet ef migrations add AddCommentStatusesAndAuditLog --project CorpWiki.Infrastructure --startup-project CorpWiki.Web
-
-
-
-protected override void Up(MigrationBuilder migrationBuilder)
-{
-    // 1. Tabla comment_statuses (EF probablemente ya la generó aquí o cerca)
-    migrationBuilder.CreateTable(
-        name: "comment_statuses",
-        columns: table => new
+        protected override void Up(MigrationBuilder migrationBuilder)
         {
-            Id = table.Column<int>(type: "int", nullable: false),
-            Name = table.Column<string>(type: "nvarchar(50)", maxLength: 50, nullable: false)
-        },
-        constraints: table => table.PrimaryKey("PK_comment_statuses", x => x.Id));
+            // 1. Tabla catálogo primero
+            migrationBuilder.CreateTable(
+                name: "comment_statuses",
+                columns: table => new
+                {
+                    Id = table.Column<int>(type: "int", nullable: false),
+                    Name = table.Column<string>(type: "nvarchar(50)", maxLength: 50, nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_comment_statuses", x => x.Id);
+                });
 
-    // 2. Seed (EF suele generar esto automático vía HasData, verifícalo)
-    migrationBuilder.InsertData(
-        table: "comment_statuses",
-        columns: new[] { "Id", "Name" },
-        values: new object[,] { { 1, "Active" }, { 2, "Edited" }, { 3, "Deleted" } });
+            // 2. Seed
+            migrationBuilder.InsertData(
+                table: "comment_statuses",
+                columns: new[] { "Id", "Name" },
+                values: new object[,]
+                {
+                    { 1, "Active" },
+                    { 2, "Edited" },
+                    { 3, "Deleted" }
+                });
 
-    // 3. Agregar StatusId con default temporal (EF ya debería generar esto)
-    migrationBuilder.AddColumn<int>(
-        name: "StatusId",
-        table: "article_comments",
-        type: "int",
-        nullable: false,
-        defaultValue: 1);
+            // 3. Agregar StatusId con default = 1 (Active), NO 0
+            migrationBuilder.AddColumn<int>(
+                name: "StatusId",
+                table: "article_comments",
+                type: "int",
+                nullable: false,
+                defaultValue: 1);
 
-    // 4. TÚ AGREGAS ESTO A MANO — EF no lo genera nunca:
-    migrationBuilder.Sql(@"
-        UPDATE article_comments SET StatusId = 3 WHERE IsDeleted = 1;
-        UPDATE article_comments SET StatusId = 2 WHERE IsDeleted = 0 AND UpdatedAt IS NOT NULL;
-    ");
+            // 4. Migrar datos MIENTRAS IsDeleted todavía existe
+            migrationBuilder.Sql(@"
+                UPDATE article_comments SET StatusId = 3 WHERE IsDeleted = 1;
+                UPDATE article_comments SET StatusId = 2 WHERE IsDeleted = 0 AND UpdatedAt IS NOT NULL;
+            ");
 
-    // 5. Borrar IsDeleted (EF ya lo genera, solo verifica que quede DESPUÉS del Sql de arriba)
-    migrationBuilder.DropColumn(name: "IsDeleted", table: "article_comments");
+            // 5. RECIÉN AHORA borrar IsDeleted
+            migrationBuilder.DropColumn(
+                name: "IsDeleted",
+                table: "article_comments");
 
-    // 6. Índice y FK sobre StatusId (EF ya lo genera)
-    migrationBuilder.CreateIndex("IX_article_comments_StatusId", "article_comments", "StatusId");
-    migrationBuilder.AddForeignKey(
-        name: "FK_article_comments_comment_statuses_StatusId",
-        table: "article_comments", column: "StatusId",
-        principalTable: "comment_statuses", principalColumn: "Id",
-        onDelete: ReferentialAction.Restrict);
+            // 6. Índice y FK de StatusId, con Restrict
+            migrationBuilder.CreateIndex(
+                name: "IX_article_comments_StatusId",
+                table: "article_comments",
+                column: "StatusId");
 
-    // 7. Tabla comment_audit_log (EF ya la genera, verifica el FK con Restrict)
-    migrationBuilder.CreateTable(
-        name: "comment_audit_log",
-        columns: table => new
-        {
-            Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-            CommentId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-            PreviousStatusId = table.Column<int>(type: "int", nullable: false),
-            NewStatusId = table.Column<int>(type: "int", nullable: false),
-            PreviousContent = table.Column<string>(type: "nvarchar(max)", nullable: true),
-            ChangedByUserId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-            ChangedAt = table.Column<DateTime>(type: "datetime2", nullable: false)
-        },
-        constraints: table =>
-        {
-            table.PrimaryKey("PK_comment_audit_log", x => x.Id);
-            table.ForeignKey(
-                name: "FK_comment_audit_log_article_comments_CommentId",
-                column: x => x.CommentId,
-                principalTable: "article_comments",
+            migrationBuilder.AddForeignKey(
+                name: "FK_article_comments_comment_statuses_StatusId",
+                table: "article_comments",
+                column: "StatusId",
+                principalTable: "comment_statuses",
                 principalColumn: "Id",
-                onDelete: ReferentialAction.Restrict);
-        });
+                onDelete: ReferentialAction.Restrict);   // Restrict, no Cascade
 
-    migrationBuilder.CreateIndex("IX_comment_audit_log_CommentId", "comment_audit_log", "CommentId");
-    migrationBuilder.CreateIndex("IX_comment_audit_log_ChangedAt", "comment_audit_log", "ChangedAt");
+            // 7. Tabla de auditoría
+            migrationBuilder.CreateTable(
+                name: "comment_audit_log",
+                columns: table => new
+                {
+                    Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    CommentId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    PreviousStatusId = table.Column<int>(type: "int", nullable: false),
+                    NewStatusId = table.Column<int>(type: "int", nullable: false),
+                    PreviousContent = table.Column<string>(type: "nvarchar(max)", nullable: true),
+                    ChangedByUserId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    ChangedAt = table.Column<DateTime>(type: "datetime2", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_comment_audit_log", x => x.Id);
+                    table.ForeignKey(
+                        name: "FK_comment_audit_log_article_comments_CommentId",
+                        column: x => x.CommentId,
+                        principalTable: "article_comments",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_comment_audit_log_CommentId",
+                table: "comment_audit_log",
+                column: "CommentId");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_comment_audit_log_ChangedAt",
+                table: "comment_audit_log",
+                column: "ChangedAt");
+        }
+
+        protected override void Down(MigrationBuilder migrationBuilder)
+        {
+            migrationBuilder.DropForeignKey(
+                name: "FK_article_comments_comment_statuses_StatusId",
+                table: "article_comments");
+
+            migrationBuilder.DropTable(
+                name: "comment_audit_log");
+
+            migrationBuilder.DropTable(
+                name: "comment_statuses");
+
+            migrationBuilder.DropIndex(
+                name: "IX_article_comments_StatusId",
+                table: "article_comments");
+
+            migrationBuilder.DropColumn(
+                name: "StatusId",
+                table: "article_comments");
+
+            migrationBuilder.AddColumn<bool>(
+                name: "IsDeleted",
+                table: "article_comments",
+                type: "bit",
+                nullable: false,
+                defaultValue: false);
+
+            migrationBuilder.Sql(@"
+                UPDATE article_comments SET IsDeleted = 1 WHERE StatusId = 3;
+            ");
+        }
+    }
 }
