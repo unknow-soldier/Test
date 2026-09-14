@@ -1,38 +1,9 @@
-private async Task AddComment()
+private void OpenDeleteModal() => _showDeleteModal = true;
+
+private void CloseDeleteModal() => _showDeleteModal = false;
+
+private async Task ConfirmDelete()
 {
-    if (string.IsNullOrWhiteSpace(_newComment)) return;
-
-    // Obtener el DTO recién creado devuelto por el backend
-    var createdCommentDto = await CommentService.CreateCommentAsync(_articleId, _newComment);
-
-    if (createdCommentDto != null)
-    {
-        // Agregar a la lista el DTO oficial retornado (que ya trae el Id válido)
-        _comments.Add(createdCommentDto);
-        _newComment = string.Empty;
-        StateHasChanged();
-    }
-}
-
-
-
-
-
-private async Task HandleCommentDelete(Guid commentId)
-{
-    try
-    {
-        var success = await CommentService.DeleteCommentAsync(commentId);
-        if (success)
-        {
-            // Remover de la lista local
-            _comments.RemoveAll(c => c.Id == commentId);
-            StateHasChanged();
-        }
-    }
-    catch (Exception ex)
-    {
-        // Previene que la excepción rompa el circuito de Blazor Server
-        Console.WriteLine($"Error eliminando comentario: {ex.Message}");
-    }
+    _showDeleteModal = false;
+    await OnDelete.InvokeAsync(Id);
 }
