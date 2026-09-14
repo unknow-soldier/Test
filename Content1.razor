@@ -1,135 +1,120 @@
-using Microsoft.EntityFrameworkCore.Migrations;
-
-#nullable disable
-
-namespace CorpWiki.Infrastructure.Persistence.Migrations
+public async Task<bool> UpdateCommentAsync(Guid commentId, string content)
 {
-    public partial class AddCommentStatusesAndAuditLog : Migration
+    await using var db = await _dbFactory.CreateDbContextAsync();
+    var userId = await _securityService.GetCurrentUserIdAsync();
+    if (userId == Guid.Empty) return false;
+    if (string.IsNullOrWhiteSpace(content)) return false;
+
+    var comment = await db.ArticleComments.FirstOrDefaultAsync(c => c.Id == commentId);
+    if (comment == null || comment.UserId != userId) return false;
+
+    if (comment.StatusId == (int)CommentStatusEnum.Deleted) return false; // no se edita un eliminado
+
+    db.CommentAuditLogs.Add(new CommentAuditLog
     {
-        protected override void Up(MigrationBuilder migrationBuilder)
-        {
-            // 1. Tabla catálogo primero
-            migrationBuilder.CreateTable(
-                name: "comment_statuses",
-                columns: table => new
-                {
-                    Id = table.Column<int>(type: "int", nullable: false),
-                    Name = table.Column<string>(type: "nvarchar(50)", maxLength: 50, nullable: false)
-                },
-                constraints: table =>
-                {
-                    table.PrimaryKey("PK_comment_statuses", x => x.Id);
-                });
+        Id = Guid.NewGuid(),
+        CommentId = comment.Id,
+        PreviousStatusId = comment.StatusId,
+        NewStatusId = (int)CommentStatusEnum.Edited,
+        PreviousContent = comment.Content,
+        ChangedByUserId = userId,
+        ChangedAt = DateTime.UtcNow
+    });
 
-            // 2. Seed
-            migrationBuilder.InsertData(
-                table: "comment_statuses",
-                columns: new[] { "Id", "Name" },
-                values: new object[,]
-                {
-                    { 1, "Active" },
-                    { 2, "Edited" },
-                    { 3, "Deleted" }
-                });
+    comment.Content = content.Trim();
+    comment.UpdatedAt = DateTime.UtcNow;
+    comment.StatusId = (int)CommentStatusEnum.Edited;
+    await db.SaveChangesAsync();
 
-            // 3. Agregar StatusId con default = 1 (Active), NO 0
-            migrationBuilder.AddColumn<int>(
-                name: "StatusId",
-                table: "article_comments",
-                type: "int",
-                nullable: false,
-                defaultValue: 1);
+    var updated = await db.ArticleComments.Include(c => c.User).FirstAsync(c => c.Id == commentId);
+    var likesCount = await db.ArticleCommentLikes.CountAsync(l => l.CommentId == commentId);
+    var isLikedByCurrentUser = await db.ArticleCommentLikes.AnyAsync(l => l.CommentId == commentId && l.UserId == userId);
 
-            // 4. Migrar datos MIENTRAS IsDeleted todavía existe
-            migrationBuilder.Sql(@"
-                UPDATE article_comments SET StatusId = 3 WHERE IsDeleted = 1;
-                UPDATE article_comments SET StatusId = 2 WHERE IsDeleted = 0 AND UpdatedAt IS NOT NULL;
-            ");
+    var dto = new CommentDto
+    {
+        Id = updated.Id,
+        ParentCommentId = updated.ParentCommentId,
+        Content = updated.Content,
+        CreatedAt = updated.CreatedAt,
+        UpdatedAt = updated.UpdatedAt,
+        UserId = updated.UserId,
+        StatusId = updated.StatusId,
+        AuthorName = updated.User?.FullName ?? "Usuario",
+        AuthorInitials = GetInitials(updated.User?.FullName),
+        AuthorColorFrom = updated.User?.AvatarColorFrom ?? "#6366f1",
+        AuthorColorTo = updated.User?.AvatarColorTo ?? "#8b5cf6",
+        LikesCount = likesCount,
+        IsLikedByCurrentUser = isLikedByCurrentUser,
+        CanEditOrDelete = true
+    };
 
-            // 5. RECIÉN AHORA borrar IsDeleted
-            migrationBuilder.DropColumn(
-                name: "IsDeleted",
-                table: "article_comments");
-
-            // 6. Índice y FK de StatusId, con Restrict
-            migrationBuilder.CreateIndex(
-                name: "IX_article_comments_StatusId",
-                table: "article_comments",
-                column: "StatusId");
-
-            migrationBuilder.AddForeignKey(
-                name: "FK_article_comments_comment_statuses_StatusId",
-                table: "article_comments",
-                column: "StatusId",
-                principalTable: "comment_statuses",
-                principalColumn: "Id",
-                onDelete: ReferentialAction.Restrict);   // Restrict, no Cascade
-
-            // 7. Tabla de auditoría
-            migrationBuilder.CreateTable(
-                name: "comment_audit_log",
-                columns: table => new
-                {
-                    Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    CommentId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    PreviousStatusId = table.Column<int>(type: "int", nullable: false),
-                    NewStatusId = table.Column<int>(type: "int", nullable: false),
-                    PreviousContent = table.Column<string>(type: "nvarchar(max)", nullable: true),
-                    ChangedByUserId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    ChangedAt = table.Column<DateTime>(type: "datetime2", nullable: false)
-                },
-                constraints: table =>
-                {
-                    table.PrimaryKey("PK_comment_audit_log", x => x.Id);
-                    table.ForeignKey(
-                        name: "FK_comment_audit_log_article_comments_CommentId",
-                        column: x => x.CommentId,
-                        principalTable: "article_comments",
-                        principalColumn: "Id",
-                        onDelete: ReferentialAction.Restrict);
-                });
-
-            migrationBuilder.CreateIndex(
-                name: "IX_comment_audit_log_CommentId",
-                table: "comment_audit_log",
-                column: "CommentId");
-
-            migrationBuilder.CreateIndex(
-                name: "IX_comment_audit_log_ChangedAt",
-                table: "comment_audit_log",
-                column: "ChangedAt");
-        }
-
-        protected override void Down(MigrationBuilder migrationBuilder)
-        {
-            migrationBuilder.DropForeignKey(
-                name: "FK_article_comments_comment_statuses_StatusId",
-                table: "article_comments");
-
-            migrationBuilder.DropTable(
-                name: "comment_audit_log");
-
-            migrationBuilder.DropTable(
-                name: "comment_statuses");
-
-            migrationBuilder.DropIndex(
-                name: "IX_article_comments_StatusId",
-                table: "article_comments");
-
-            migrationBuilder.DropColumn(
-                name: "StatusId",
-                table: "article_comments");
-
-            migrationBuilder.AddColumn<bool>(
-                name: "IsDeleted",
-                table: "article_comments",
-                type: "bit",
-                nullable: false,
-                defaultValue: false);
-
-            migrationBuilder.Sql(@"
-                UPDATE article_comments SET IsDeleted = 1 WHERE StatusId = 3;
-            ");
-        }
-    }
+    await _commentBroadcaster.CommentUpdatedAsync(updated.ArticleId, dto);
+    return true;
 }
+
+
+
+
+
+
+
+
+public async Task<bool> DeleteCommentAsync(Guid commentId)
+{
+    await using var db = await _dbFactory.CreateDbContextAsync();
+    var userId = await _securityService.GetCurrentUserIdAsync();
+    if (userId == Guid.Empty) return false;
+
+    var comment = await db.ArticleComments.FirstOrDefaultAsync(c => c.Id == commentId);
+    if (comment == null || comment.UserId != userId) return false;
+
+    if (comment.StatusId == (int)CommentStatusEnum.Deleted) return true; // idempotente
+
+    db.CommentAuditLogs.Add(new CommentAuditLog
+    {
+        Id = Guid.NewGuid(),
+        CommentId = comment.Id,
+        PreviousStatusId = comment.StatusId,
+        NewStatusId = (int)CommentStatusEnum.Deleted,
+        PreviousContent = comment.Content,
+        ChangedByUserId = userId,
+        ChangedAt = DateTime.UtcNow
+    });
+
+    comment.StatusId = (int)CommentStatusEnum.Deleted;
+    // Content, UserId, ParentCommentId, Replies: intactos. No se toca nada más.
+
+    await db.SaveChangesAsync();
+
+    await _commentBroadcaster.CommentStatusChangedAsync(comment.ArticleId, comment.Id, comment.StatusId);
+    return true;
+}
+
+
+
+
+
+
+
+private Task OnCommentStatusChangedAsync(Guid articleId, Guid commentId, int newStatusId)
+{
+    if (_article is null || articleId != _article.Id) return Task.CompletedTask;
+
+    return InvokeAsync(() =>
+    {
+        var target = _comments.FirstOrDefault(c => c.Id == commentId)
+                     ?? _comments.SelectMany(c => c.Replies).FirstOrDefault(r => r.Id == commentId);
+
+        if (target != null)
+        {
+            target.StatusId = newStatusId;
+        }
+        StateHasChanged();
+    });
+}
+
+
+
+
+
+
