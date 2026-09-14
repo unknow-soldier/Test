@@ -1,44 +1,36 @@
-using CorpWiki.Application.DTOs;
-
-namespace CorpWiki.Web.Realtime;
-
-public sealed class CommentRealtimeNotifier : ICommentRealtimeNotifier
-{
-    public event Func<Guid, CommentDto, Task>? CommentAdded;
-    public event Func<Guid, CommentDto, Task>? CommentUpdated;
-    public event Func<Guid, Guid, int, Task>? CommentStatusChanged;
-    public event Func<Guid, Guid, int, Guid, bool, Task>? CommentLikeToggled;
-
-    public Task RaiseCommentAddedAsync(Guid articleId, CommentDto comment)
-        => InvokeAllAsync(CommentAdded, h => h(articleId, comment));
-
-    public Task RaiseCommentUpdatedAsync(Guid articleId, CommentDto comment)
-        => InvokeAllAsync(CommentUpdated, h => h(articleId, comment));
-
-    public Task RaiseCommentStatusChangedAsync(Guid articleId, Guid commentId, int newStatusId)
-        => InvokeAllAsync(CommentStatusChanged, h => h(articleId, commentId, newStatusId));
-
-    public Task RaiseCommentLikeToggledAsync(Guid articleId, Guid commentId, int likesCount, Guid userId, bool liked)
-        => InvokeAllAsync(CommentLikeToggled, h => h(articleId, commentId, likesCount, userId, liked));
-
-    private static async Task InvokeAllAsync<THandler>(THandler? multicast, Func<THandler, Task> invoke)
-        where THandler : Delegate
+<div class="comments-list">
+    @foreach (var c in _comments.Where(c => c.ShouldRender))
     {
-        if (multicast is null) return;
-
-        foreach (var handler in multicast.GetInvocationList())
-        {
-            try
-            {
-                await invoke((THandler)handler);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[CommentRealtimeNotifier] Error invocando handler: {ex}");
-            }
-        }
+        <CommentCard Id="@c.Id"
+                     ParentCommentId="@c.ParentCommentId"
+                     RootCommentId="null"
+                     AuthorName="@c.AuthorName"
+                     AuthorInitials="@c.AuthorInitials"
+                     AuthorColorFrom="@c.AuthorColorFrom"
+                     AuthorColorTo="@c.AuthorColorTo"
+                     Content="@c.Content"
+                     IsDeleted="@c.IsDeleted"
+                     IsEdited="@c.IsEdited"
+                     CreatedAt="@c.CreatedAt"
+                     Likes="@c.LikesCount"
+                     IsLiked="@c.IsLikedByCurrentUser"
+                     CanEditOrDelete="@(c.CanEditOrDelete && !c.IsDeleted)"
+                     ReplyingToAuthorName="@c.ReplyingToAuthorName"
+                     Replies="@(c.Replies.Where(r => r.ShouldRender).ToList())"
+                     OnLike="HandleCommentLike"
+                     OnReply="HandleCommentReply"
+                     OnEdit="HandleCommentEdit"
+                     OnDelete="HandleCommentDelete" />
     }
-}
+</div>
+
+
+
+
+
+
+// ICommentDataService.cs
+Task<IReadOnlyList<CommentAuditLogDto>> GetAuditLogAsync(Guid commentId);
 
 
 
@@ -46,54 +38,43 @@ public sealed class CommentRealtimeNotifier : ICommentRealtimeNotifier
 
 
 
-using CorpWiki.Application.DTOs;
-using CorpWiki.Application.Interfaces;
-using CorpWiki.Web.Realtime;
-
-namespace CorpWiki.Web.Hubs;
-
-public class CommentBroadcaster : ICommentBroadcaster
+// CommentAuditLogDto.cs (Application/DTOs)
+public class CommentAuditLogDto
 {
-    private readonly ICommentRealtimeNotifier _notifier;
-
-    public CommentBroadcaster(ICommentRealtimeNotifier notifier)
-    {
-        _notifier = notifier;
-    }
-
-    private static string GroupName(Guid articleId) => $"{articleId}";
-
-    public Task CommentAddedAsync(Guid articleId, CommentDto comment)
-        => _notifier.RaiseCommentAddedAsync(articleId, comment);
-
-    public Task CommentUpdatedAsync(Guid articleId, CommentDto comment)
-        => _notifier.RaiseCommentUpdatedAsync(articleId, comment);
-
-    public Task CommentStatusChangedAsync(Guid articleId, Guid commentId, int newStatusId)
-        => _notifier.RaiseCommentStatusChangedAsync(articleId, commentId, newStatusId);
-
-    public Task CommentLikeToggledAsync(Guid articleId, Guid commentId, int likesCount, Guid userId, bool liked)
-        => _notifier.RaiseCommentLikeToggledAsync(articleId, commentId, likesCount, userId, liked);
+    public int PreviousStatusId { get; set; }
+    public int NewStatusId { get; set; }
+    public string? PreviousContent { get; set; }
+    public string ChangedByUserName { get; set; } = string.Empty;
+    public DateTime ChangedAt { get; set; }
 }
 
 
 
 
 
-
-private Task OnCommentStatusChangedAsync(Guid articleId, Guid commentId, int newStatusId)
+// CommentDataService.cs
+public async Task<IReadOnlyList<CommentAuditLogDto>> GetAuditLogAsync(Guid commentId)
 {
-    if (_article is null || articleId != _article.Id) return Task.CompletedTask;
+    await using var db = await _dbFactory.CreateDbContextAsync();
 
-    return InvokeAsync(() =>
-    {
-        var target = _comments.FirstOrDefault(c => c.Id == commentId)
-                     ?? _comments.SelectMany(c => c.Replies).FirstOrDefault(r => r.Id == commentId);
-
-        if (target != null)
-        {
-            target.StatusId = newStatusId;
-        }
-        StateHasChanged();
-    });
+    return await db.CommentAuditLogs
+        .Where(l => l.CommentId == commentId)
+        .OrderByDescending(l => l.ChangedAt)
+        .Join(db.SecurityUsers,
+              l => l.ChangedByUserId,
+              u => u.Id,
+              (l, u) => new CommentAuditLogDto
+              {
+                  PreviousStatusId = l.PreviousStatusId,
+                  NewStatusId = l.NewStatusId,
+                  PreviousContent = l.PreviousContent,
+                  ChangedByUserName = u.FullName,
+                  ChangedAt = l.ChangedAt
+              })
+        .ToListAsync();
 }
+
+
+
+
+
