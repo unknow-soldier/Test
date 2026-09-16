@@ -1,154 +1,6 @@
-using System;
-using System.Security.Cryptography;
-using System.Text;
-using System.Text.RegularExpressions;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
-using CorpWiki.Application.Interfaces;
-using CorpWiki.Application.Interfaces.Repositories;
-using CorpWiki.Application.UseCases;
-using CorpWiki.Infrastructure.Helpers;
-using CorpWiki.Infrastructure.Options;
-using CorpWiki.Infrastructure.Persistence;
-using CorpWiki.Infrastructure.Security;
-using CorpWiki.Infrastructure.Services;
-
-namespace CorpWiki.Infrastructure;
-
-public static class InfrastructureServiceExtensions
-{
-    /// <summary>
-    /// Registra todos los servicios de infraestructura: DbContext, proveedores de DB,
-    /// Active Directory, servicios de seguridad y almacenamiento de archivos.
-    /// </summary>
-    public static IServiceCollection AddDaviWikiInfrastructure(
-        this IServiceCollection services, 
-        IConfiguration configuration)
-    {
-        // --- 1. Configurar DbContext con el proveedor de base de datos seleccionado ---
-        var provider = configuration["DatabaseProvider"] ?? "MySQL";
-        var rawConnectionString = configuration.GetConnectionString(provider);
-
-        if (string.IsNullOrWhiteSpace(rawConnectionString))
-        {
-            throw new InvalidOperationException(
-                $"No se encontró ConnectionString para el proveedor '{provider}'. " +
-                $"Verifique la sección ConnectionStrings:{provider} en appsettings.json.");
-        }
-
-        // Desencriptar la cadena de conexión cifrada antes de pasarla a EF Core
-        var connectionString = ConnectionStringProtector.DecryptConnectionString(rawConnectionString);
-
-        services.AddDbContextFactory<DaviWikiDbContext>(options =>
-        {
-            switch (provider.ToUpperInvariant())
-            {
-                case "MYSQL":
-                    var serverVersion = ServerVersion.AutoDetect(connectionString);
-                    options.UseMySql(connectionString, serverVersion, mysql =>
-                    {
-                        mysql.MigrationsAssembly(typeof(DaviWikiDbContext).Assembly.FullName);
-                        mysql.EnableRetryOnFailure(3);
-                    });
-                    break;
-
-                case "SQLSERVER":
-                    options.UseSqlServer(connectionString, sql =>
-                    {
-                        sql.MigrationsAssembly(typeof(DaviWikiDbContext).Assembly.FullName);
-                        sql.EnableRetryOnFailure(3);
-                    });
-                    break;
-
-                case "POSTGRESQL":
-                    options.UseNpgsql(connectionString, npg =>
-                    {
-                        npg.MigrationsAssembly(typeof(DaviWikiDbContext).Assembly.FullName);
-                        npg.EnableRetryOnFailure(3);
-                    });
-                    break;
-
-                default:
-                    throw new InvalidOperationException(
-                        $"Proveedor de base de datos no soportado: '{provider}'. " +
-                        "Valores válidos: MySQL, SQLServer, PostgreSQL.");
-            }
-
-            options.LogTo(Console.WriteLine, LogLevel.Information).EnableSensitiveDataLogging();
-        });
-
-        // --- 2. Registrar el validador de Active Directory (real o simulado) ---
-        var simulateAdString = configuration["Security:SimulateAD"];
-        var simulateAd = bool.TryParse(simulateAdString, out var parsed) && parsed;
-
-        if (simulateAd)
-        {
-            services.AddScoped<IActiveDirectoryValidator, SimulatedAdService>();
-        }
-        else
-        {
-            services.AddScoped<IActiveDirectoryValidator, ActiveDirectoryService>();
-        }
-
-        // --- 3. Registrar servicios de seguridad ---
-        services.AddScoped<ISecurityService, SecurityService>();
-        services.AddScoped<IAuthenticationService, AuthenticationService>();
-
-        services.Configure<FileStorageOptions>(
-            configuration.GetSection(FileStorageOptions.SectionName));
-        services.AddHttpContextAccessor();
-
-        // --- 4. Registrar servicio de almacenamiento de archivos ---
-        var storageOptions = configuration
-            .GetSection(FileStorageOptions.SectionName)
-            .Get<FileStorageOptions>();
-
-        if (string.Equals(storageOptions?.Provider, "CloudflareR2", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(storageOptions?.Provider, "S3", StringComparison.OrdinalIgnoreCase))
-        {
-            services.AddSingleton<IAmazonS3>(_ =>
-            {
-                var config = new AmazonS3Config
-                {
-                    ServiceURL = storageOptions.ServiceUrl,
-                    ForcePathStyle = true // Requerido por R2 / S3 local
-                };
-
-                return new AmazonS3Client(storageOptions.AccessKey, storageOptions.SecretKey, config);
-            });
-
-            services.AddScoped<IFileStorageService, CloudflareR2StorageService>();
-        }
-        else
-        {
-            services.AddScoped<IFileStorageService, LocalFileStorageService>();
-        }
-
-        // --- 5. Registrar casos de uso de archivos ---
-        var allowedExtensions = new HashSet<string>(
-            storageOptions?.AllowedExtensions ?? Array.Empty<string>(),
-            StringComparer.OrdinalIgnoreCase);
-
-        services.AddScoped<UploadFileUseCase>(sp =>
-            new UploadFileUseCase(
-                sp.GetRequiredService<IFileStorageService>(),
-                storageOptions?.MaxFileSizeInBytes ?? 20 * 1024 * 1024,
-                allowedExtensions));
-
-        services.AddScoped<DeleteFileUseCase>();
-
-        return services;
-    }
-}
-
-/// <summary>
-/// Helper de desencriptación AES-GCM estático dentro del mismo ensamblado Infrastructure.
-/// </summary>
 public static class ConnectionStringProtector
 {
-    // Clave secreta fija de 32 bytes en Base64 utilizada durante la encriptación
+    // Clave fija de 32 bytes en Base64
     private static readonly byte[] StaticKey = Convert.FromBase64String("z9xO7vP1/qK4mO2jL8nB5aC0fR3uW6xY9sV2oE5hHIg=");
 
     public static string DecryptConnectionString(string? connectionString)
@@ -156,25 +8,32 @@ public static class ConnectionStringProtector
         if (string.IsNullOrWhiteSpace(connectionString))
             return string.Empty;
 
-        // Soporta formatos "ENC(...)" o "ENC:..."
-        return Regex.Replace(
-            connectionString,
-            @"ENC:?\(([^)]+)\)|ENC:([A-Za-z0-9+/=]+)",
-            match =>
-            {
-                string cipherText = match.Groups[1].Success 
-                    ? match.Groups[1].Value 
-                    : match.Groups[2].Value;
+        // Si la cadena no está encriptada, la retorna intacta
+        if (!connectionString.StartsWith("ENC(", StringComparison.OrdinalIgnoreCase) && 
+            !connectionString.StartsWith("ENC:", StringComparison.OrdinalIgnoreCase))
+        {
+            return connectionString;
+        }
 
-                return DecryptAesGcm(cipherText);
-            });
+        // Extraer el texto base64 dentro de ENC(...) o después de ENC:
+        string cipherTextBase64 = connectionString;
+        if (cipherTextBase64.StartsWith("ENC(", StringComparison.OrdinalIgnoreCase) && cipherTextBase64.EndsWith(")"))
+        {
+            cipherTextBase64 = cipherTextBase64.Substring(4, cipherTextBase64.Length - 5);
+        }
+        else if (cipherTextBase64.StartsWith("ENC:", StringComparison.OrdinalIgnoreCase))
+        {
+            cipherTextBase64 = cipherTextBase64.Substring(4);
+        }
+
+        return DecryptAesGcm(cipherTextBase64.Trim());
     }
 
     private static string DecryptAesGcm(string cipherTextBase64)
     {
         byte[] fullBytes = Convert.FromBase64String(cipherTextBase64);
 
-        // Buffer: Nonce (12 bytes) + Tag (16 bytes) + CipherText
+        // Estructura: Nonce (12 bytes) + Tag (16 bytes) + CipherText
         ReadOnlySpan<byte> nonce = fullBytes.AsSpan(0, 12);
         ReadOnlySpan<byte> tag = fullBytes.AsSpan(12, 16);
         ReadOnlySpan<byte> cipherBytes = fullBytes.AsSpan(28);
@@ -187,3 +46,63 @@ public static class ConnectionStringProtector
         return Encoding.UTF8.GetString(decryptedBytes);
     }
 }
+
+
+
+
+
+
+
+dotnet script -e '
+using System;
+using System.Security.Cryptography;
+using System.Text;
+
+byte[] key = Convert.FromBase64String("z9xO7vP1/qK4mO2jL8nB5aC0fR3uW6xY9sV2oE5hHIg=");
+string plainText = @"Data Source=HNCSTG010200AP\HNCSTG010200AP;Initial Catalog=daviwiki;User Id=34002092;Password=hnntrT1834m6a;TrustServerCertificate=True;";
+
+byte[] plainBytes = Encoding.UTF8.GetBytes(plainText);
+byte[] nonce = new byte[12];
+byte[] tag = new byte[16];
+byte[] cipherBytes = new byte[plainBytes.Length];
+
+RandomNumberGenerator.Fill(nonce);
+
+using (var aesGcm = new AesGcm(key, 16)) {
+    aesGcm.Encrypt(nonce, plainBytes, cipherBytes, tag);
+}
+
+byte[] result = new byte[12 + 16 + cipherBytes.Length];
+Buffer.BlockCopy(nonce, 0, result, 0, 12);
+Buffer.BlockCopy(tag, 0, result, 12, 16);
+Buffer.BlockCopy(cipherBytes, 0, result, 28, cipherBytes.Length);
+
+Console.WriteLine("ENC(" + Convert.ToBase64String(result) + ")");
+'
+
+
+
+
+
+$plainText = 'Data Source=HNCSTG010200AP\HNCSTG010200AP;Initial Catalog=daviwiki;User Id=34002092;Password=hnntrT1834m6a;TrustServerCertificate=True;'
+$code = @"
+using System; using System.Security.Cryptography; using System.Text;
+public class Enc {
+    public static string Run(string plainText) {
+        byte[] key = Convert.FromBase64String("z9xO7vP1/qK4mO2jL8nB5aC0fR3uW6xY9sV2oE5hHIg=");
+        byte[] plainBytes = Encoding.UTF8.GetBytes(plainText);
+        byte[] nonce = new byte[12]; byte[] tag = new byte[16]; byte[] cipherBytes = new byte[plainBytes.Length];
+        RandomNumberGenerator.Fill(nonce);
+        using (var aes = new AesGcm(key, 16)) { aes.Encrypt(nonce, plainBytes, cipherBytes, tag); }
+        byte[] res = new byte[28 + cipherBytes.Length];
+        Buffer.BlockCopy(nonce, 0, res, 0, 12); Buffer.BlockCopy(tag, 0, res, 12, 16); Buffer.BlockCopy(cipherBytes, 0, res, 28, cipherBytes.Length);
+        return "ENC(" + Convert.ToBase64String(res) + ")";
+    }
+}
+"@
+Add-Type -TypeDefinition $code
+[Enc]::Run($plainText)
+
+
+
+
