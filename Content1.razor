@@ -1,3 +1,36 @@
-UPDATE [daviwiki].[dbo].[articles]
-SET [AuthorId] = '45F850AA-BB86-4DFB-9A34-1FA434F477ED'
-WHERE [Id] = '6047C74E-C9AC-4CA0-AA2B-D17F16ABC012';
+# Script para encriptar datos con AES-256 (Compatible con ConnectionStringProtector)
+
+Param(
+    [string]$Key = "TuClaveSecretaSuperSeguraDe32Bytes!" # Debe ser de 32 caracteres (256 bits)
+)
+
+Write-Host "--- Generador de Cifrado AES-256 ---" -ForegroundColor Cyan
+$plainText = Read-Host "Ingresa el texto a encriptar (Usuario, Password, etc.)"
+
+if ([string]::IsNullOrWhitespace($plainText)) {
+    Write-Host "No ingresaste ningún texto." -ForegroundColor Red
+    exit
+}
+
+# Preparar clave e IV
+$aes = [System.Security.Cryptography.Aes]::Create()
+$keyBytes = [System.Text.Encoding]::UTF8.GetBytes($Key.PadRight(32).Substring(0, 32))
+$aes.Key = $keyBytes
+$aes.GenerateIV()
+
+# Encriptar
+$encryptor = $aes.CreateEncryptor($aes.Key, $aes.IV)
+$plainBytes = [System.Text.Encoding]::UTF8.GetBytes($plainText)
+$encryptedBytes = $encryptor.TransformFinalBlock($plainBytes, 0, $plainBytes.Length)
+
+# Concatenar IV + Texto Cifrado
+$resultBytes = New-Object byte[] ($aes.IV.Length + $encryptedBytes.Length)
+[System.Buffer]::BlockCopy($aes.IV, 0, $resultBytes, 0, $aes.IV.Length)
+[System.Buffer]::BlockCopy($encryptedBytes, 0, $resultBytes, $aes.IV.Length, $encryptedBytes.Length)
+
+# Convertir a Base64 con prefijo ENC()
+$base64 = [System.Convert]::ToBase64String($resultBytes)
+$finalEncrypted = "ENC($base64)"
+
+Write-Host "`nResultado encriptado:" -ForegroundColor Green
+Write-Host $finalEncrypted -ForegroundColor Yellow
