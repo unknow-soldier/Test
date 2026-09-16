@@ -1,36 +1,71 @@
-# Script para encriptar datos con AES-256 (Compatible con ConnectionStringProtector)
+using System;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.RegularExpressions;
 
-Param(
-    [string]$Key = "TuClaveSecretaSuperSeguraDe32Bytes!" # Debe ser de 32 caracteres (256 bits)
-)
+namespace CorpWiki.Infrastructure.Security;
 
-Write-Host "--- Generador de Cifrado AES-256 ---" -ForegroundColor Cyan
-$plainText = Read-Host "Ingresa el texto a encriptar (Usuario, Password, etc.)"
+public static class ConnectionStringProtector
+{
+    // Mismísima clave en Base64 utilizada en tu script EncryptSecret.ps1
+    private static readonly byte[] StaticKey = Convert.FromBase64String("z9xO7vP1/qK4mO2jL8nB5aC0fR3uW6xY9sV2oE5hHIg=");
 
-if ([string]::IsNullOrWhitespace($plainText)) {
-    Write-Host "No ingresaste ningún texto." -ForegroundColor Red
-    exit
+    public static string DecryptConnectionString(string? connectionString)
+    {
+        if (string.IsNullOrWhiteSpace(connectionString)) 
+            return string.Empty;
+
+        // Si la cadena comienza con "ENC:" o contiene "ENC(...)", extrae el token cifrado y lo desencripta
+        return Regex.Replace(
+            connectionString, 
+            @"ENC:([A-Za-z0-9+/=]+)", 
+            match => DecryptAesGcm(match.Groups[1].Value));
+    }
+
+    private static string DecryptAesGcm(string cipherTextBase64)
+    {
+        byte[] fullBytes = Convert.FromBase64String(cipherTextBase64);
+
+        // Estructura del buffer generado por tu script:
+        // [0..11]   : Nonce (12 bytes)
+        // [12..27]  : Tag (16 bytes)
+        // [28..end] : CipherText
+        ReadOnlySpan<byte> nonce = fullBytes.AsSpan(0, 12);
+        ReadOnlySpan<byte> tag = fullBytes.AsSpan(12, 16);
+        ReadOnlySpan<byte> cipherBytes = fullBytes.AsSpan(28);
+
+        byte[] decryptedBytes = new byte[cipherBytes.Length];
+
+        using var aesGcm = new AesGcm(StaticKey, 16);
+        aesGcm.Decrypt(nonce, cipherBytes, tag, decryptedBytes);
+
+        return Encoding.UTF8.GetString(decryptedBytes);
+    }
 }
 
-# Preparar clave e IV
-$aes = [System.Security.Cryptography.Aes]::Create()
-$keyBytes = [System.Text.Encoding]::UTF8.GetBytes($Key.PadRight(32).Substring(0, 32))
-$aes.Key = $keyBytes
-$aes.GenerateIV()
 
-# Encriptar
-$encryptor = $aes.CreateEncryptor($aes.Key, $aes.IV)
-$plainBytes = [System.Text.Encoding]::UTF8.GetBytes($plainText)
-$encryptedBytes = $encryptor.TransformFinalBlock($plainBytes, 0, $plainBytes.Length)
 
-# Concatenar IV + Texto Cifrado
-$resultBytes = New-Object byte[] ($aes.IV.Length + $encryptedBytes.Length)
-[System.Buffer]::BlockCopy($aes.IV, 0, $resultBytes, 0, $aes.IV.Length)
-[System.Buffer]::BlockCopy($encryptedBytes, 0, $resultBytes, $aes.IV.Length, $encryptedBytes.Length)
 
-# Convertir a Base64 con prefijo ENC()
-$base64 = [System.Convert]::ToBase64String($resultBytes)
-$finalEncrypted = "ENC($base64)"
+using CorpWiki.Infrastructure.Security; // <--- Agregar namespace
 
-Write-Host "`nResultado encriptado:" -ForegroundColor Green
-Write-Host $finalEncrypted -ForegroundColor Yellow
+public static IServiceCollection AddDaviWikiInfrastructure(this IServiceCollection services, IConfiguration configuration)
+{
+    var provider = configuration["DatabaseProvider"] ?? "MySQL";
+    var rawConnectionString = configuration.GetConnectionString(provider);
+
+    if (string.IsNullOrWhiteSpace(rawConnectionString))
+    {
+        throw new InvalidOperationException($"No se encontró ConnectionString para el proveedor '{provider}'.");
+    }
+
+    // --------------------------------------------------------------------------
+    // DESENCRIPTAR LA CADENA ANTES DE USARLA EN LOS PROVIDERS
+    // --------------------------------------------------------------------------
+    var connectionString = ConnectionStringProtector.DecryptConnectionString(rawConnectionString);
+
+    // ... Resto de tu código intacto ...
+    
+    // switch (provider.ToUpperInvariant())
+    // case "SQLSERVER":
+    //    options.UseSqlServer(connectionString, sql => ...);
+}
