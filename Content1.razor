@@ -1,9 +1,3 @@
-private void OpenDeleteModal() => _showDeleteModal = true;
-
-private void CloseDeleteModal() => _showDeleteModal = false;
-
-private async Task ConfirmDelete()
-{
-    _showDeleteModal = false;
-    await OnDelete.InvokeAsync(Id);
-}
+UPDATE [daviwiki].[dbo].[articles]
+SET [AuthorId] = '45F850AA-BB86-4DFB-9A34-1FA434F477ED'
+WHERE [Id] = '6047C74E-C9AC-4CA0-AA2B-D17F16ABC012';
