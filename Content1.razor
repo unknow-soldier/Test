@@ -1,143 +1,53 @@
-$cert = New-SelfSignedCertificate `
-    -Subject "CN=CorpWiki.DataProtection" `
-    -CertStoreLocation "Cert:\CurrentUser\My" `
-    -KeyUsage DataEncipherment `
-    -KeyExportPolicy Exportable `
-    -NotAfter (Get-Date).AddYears(5)
-
-Write-Host "Thumbprint: $($cert.Thumbprint)"
-
-# Exportarlo como .pfx para poder llevarlo a otro ambiente/servidor si hace falta
-$pwd = ConvertTo-SecureString -String "TU_PASSWORD_TEMPORAL" -Force -AsPlainText
-Export-PfxCertificate -Cert $cert -FilePath "C:\certs\corpwiki-dp.pfx" -Password $pwd
-
-
-
-
-$cert = New-SelfSignedCertificate `
-    -Subject "CN=CorpWiki.DataProtection" `
-    -CertStoreLocation "Cert:\CurrentUser\My" `
-    -KeyUsage DataEncipherment `
-    -KeyExportPolicy Exportable `
-    -NotAfter (Get-Date).AddYears(5)
-
-Write-Host "Thumbprint: $($cert.Thumbprint)"
-
-# Exportarlo como .pfx para poder llevarlo a otro ambiente/servidor si hace falta
-$pwd = ConvertTo-SecureString -String "TU_PASSWORD_TEMPORAL" -Force -AsPlainText
-Export-PfxCertificate -Cert $cert -FilePath "C:\certs\corpwiki-dp.pfx" -Password $pwd
-
-
-
-
-
-"DataProtection": {
-    "CertificatePath": "C:\\certs\\corpwiki-dp.pfx",
-    "CertificatePassword": "",
-    "KeysPath": "C:\\ProgramData\\CorpWiki\\keys"
-  }
-
-
-
-
-namespace CorpWiki.Infrastructure.Options;
-
-public class DataProtectionOptions
-{
-    public const string SectionName = "DataProtection";
-
-    public string CertificatePath { get; set; } = string.Empty;
-    public string CertificatePassword { get; set; } = string.Empty;
-    public string KeysPath { get; set; } = string.Empty;
-}
-
-
-
-
 using System;
 using System.IO;
 using System.Security.Cryptography;
-using System.Security.Cryptography.X509Certificates;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Configuration;
-using CorpWiki.Infrastructure.Options;
 
 namespace CorpWiki.Infrastructure.Security;
 
 /// <summary>
-/// Cifra/descifra cadenas de conexión usando Data Protection API protegido
-/// con un certificado X.509. Funciona igual en Windows, Linux y contenedores.
+/// Cifra/descifra cadenas de conexión usando Data Protection API,
+/// protegido con DPAPI (ligado a tu usuario de Windows). Solo para desarrollo local.
 /// </summary>
 public static class ConnectionStringProtector
 {
     private const string Purpose = "CorpWiki.ConnectionStrings.v1";
     private const string EncryptedPrefix = "ENC:";
 
-    private static DataProtectionOptions LoadOptions(IConfiguration configuration)
+    private static string GetKeysPath(IConfiguration configuration)
     {
-        var options = configuration
-            .GetSection(DataProtectionOptions.SectionName)
-            .Get<DataProtectionOptions>();
-
-        if (options is null || string.IsNullOrWhiteSpace(options.CertificatePath))
-        {
-            throw new InvalidOperationException(
-                "Falta configurar la sección 'DataProtection' (CertificatePath) en appsettings.json.");
-        }
-
-        if (string.IsNullOrWhiteSpace(options.KeysPath))
-        {
-            throw new InvalidOperationException(
-                "Falta configurar 'DataProtection:KeysPath' en appsettings.json.");
-        }
-
-        return options;
-    }
-
-    private static X509Certificate2 LoadCertificate(DataProtectionOptions options)
-    {
-        if (!File.Exists(options.CertificatePath))
-        {
-            throw new FileNotFoundException(
-                $"No se encontró el certificado en '{options.CertificatePath}'. " +
-                "Verifique la ruta configurada en DataProtection:CertificatePath.");
-        }
-
-        // La contraseña puede venir vacía si el .pfx no tiene una (no recomendado en prod)
-        return string.IsNullOrEmpty(options.CertificatePassword)
-            ? new X509Certificate2(options.CertificatePath)
-            : new X509Certificate2(options.CertificatePath, options.CertificatePassword);
+        var path = configuration["DataProtection:KeysPath"]
+                   ?? Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "keys-DO-NOT-COMMIT");
+        return Path.GetFullPath(path);
     }
 
     private static IDataProtector CreateProtector(IConfiguration configuration)
     {
-        var options = LoadOptions(configuration);
-        var certificate = LoadCertificate(options);
-
-        Directory.CreateDirectory(options.KeysPath);
+        var keysPath = GetKeysPath(configuration);
+        Directory.CreateDirectory(keysPath);
 
         var provider = DataProtectionProvider.Create(
-            new DirectoryInfo(options.KeysPath),
+            new DirectoryInfo(keysPath),
             builder =>
             {
                 builder.SetApplicationName("CorpWiki");
-                builder.ProtectKeysWithCertificate(certificate);
+
+                if (OperatingSystem.IsWindows())
+                {
+                    builder.ProtectKeysWithDpapiNG();
+                }
             });
 
         return provider.CreateProtector(Purpose);
     }
 
-    /// <summary>Cifra un valor plano y devuelve el string listo para pegar en appsettings.json.</summary>
     public static string Protect(string plainText, IConfiguration configuration)
     {
         var protector = CreateProtector(configuration);
         return EncryptedPrefix + protector.Protect(plainText);
     }
 
-    /// <summary>
-    /// Si el valor viene cifrado (prefijo "ENC:"), lo descifra.
-    /// Si no, lo devuelve tal cual (útil en dev local sin cifrar).
-    /// </summary>
     public static string Resolve(string value, IConfiguration configuration)
     {
         if (string.IsNullOrEmpty(value) || !value.StartsWith(EncryptedPrefix, StringComparison.Ordinal))
@@ -153,9 +63,8 @@ public static class ConnectionStringProtector
         catch (CryptographicException ex)
         {
             throw new InvalidOperationException(
-                "No se pudo descifrar la cadena de conexión. Verifique que el certificado " +
-                "configurado sea el mismo con el que se cifró originalmente, y que " +
-                "DataProtection:KeysPath apunte a la misma carpeta de llaves.", ex);
+                "No se pudo descifrar la cadena de conexión. " +
+                "Verifique que DataProtection:KeysPath sea la misma carpeta con la que se cifró originalmente.", ex);
         }
     }
 }
@@ -164,58 +73,36 @@ public static class ConnectionStringProtector
 
 
 
-using CorpWiki.Infrastructure.Security;
+
+"DataProtection": {
+    "KeysPath": "C:\\CorpWikiKeys"
+  }
 
 
 
 
 
-var provider = configuration["DatabaseProvider"] ?? "MySQL";
-        var connectionStringRaw = configuration.GetConnectionString(provider);
+var connectionStringRaw = configuration.GetConnectionString(provider);
 
 
 
-
-if (string.IsNullOrWhiteSpace(connectionStringRaw))
-        {
-            throw new InvalidOperationException(
-                $"No se encontró ConnectionString para el proveedor '{provider}'. " +
-                $"Verifique la sección ConnectionStrings:{provider} en appsettings.json.");
-        }
-
-        // Descifra la cadena si viene protegida con el prefijo "ENC:"
-        var connectionString = ConnectionStringProtector.Resolve(connectionStringRaw, configuration);
+var connectionString = ConnectionStringProtector.Resolve(connectionStringRaw, configuration);
 
 
 
-
-// --- Utilidad de línea de comandos para cifrar cadenas de conexión ---
-// Uso: dotnet run -- encrypt "Data Source=...;Initial Catalog=...;User Id=...;Password=...;"
 if (args.Length == 2 && args[0].Equals("encrypt", StringComparison.OrdinalIgnoreCase))
 {
     var tempConfig = new ConfigurationBuilder()
         .SetBasePath(Directory.GetCurrentDirectory())
         .AddJsonFile("appsettings.json", optional: true)
-        .AddEnvironmentVariables()
         .Build();
 
     var encrypted = CorpWiki.Infrastructure.Security.ConnectionStringProtector.Protect(args[1], tempConfig);
-
-    Console.WriteLine();
     Console.WriteLine("Pega esto en appsettings.json:");
     Console.WriteLine(encrypted);
-    Console.WriteLine();
     return;
 }
 
-
-
-
-# 1. Establecer la contraseña del certificado como variable de entorno (no en el .json)
-set DataProtection__CertificatePassword=tu_password_del_pfx
-
-# 2. Generar el valor cifrado
-dotnet run --project CorpWiki.Web -- encrypt "Data Source=HNCSTG010240WAP\HNCSTG010240WAP;Initial Catalog=daviwiki;User Id=34002092;Password=knnlrTI834whLw;TrustServerCertificate=True;"
 
 
 
