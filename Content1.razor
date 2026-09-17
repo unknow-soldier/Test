@@ -1,70 +1,75 @@
 using System;
-using System.IO;
 using System.Security.Cryptography;
-using Microsoft.AspNetCore.DataProtection;
-using Microsoft.Extensions.Configuration;
+using System.Text;
 
 namespace CorpWiki.Infrastructure.Security;
 
 /// <summary>
-/// Cifra/descifra cadenas de conexión usando Data Protection API,
-/// protegido con DPAPI (ligado a tu usuario de Windows). Solo para desarrollo local.
+/// Encriptación simétrica simple para ofuscar cadenas de conexión y secretos
+/// en appsettings.json, evitando que queden en texto plano en el repo/servidor.
+/// NOTA: la llave está embebida en el ensamblado — protege contra "mirones" y
+/// filtraciones accidentales del JSON, no contra alguien con acceso al binario.
 /// </summary>
-public static class ConnectionStringProtector
+public static class ConfigObfuscator
 {
-    private const string Purpose = "CorpWiki.ConnectionStrings.v1";
-    private const string EncryptedPrefix = "ENC:";
+    private static readonly byte[] StaticKey = Convert.FromBase64String("z9xO7vP1/qK4mD2jL8nB5aC0fR3uW6xY9sV2oE5hHIg=");
 
-    private static string GetKeysPath(IConfiguration configuration)
+    private const int NonceSize = 12;
+    private const int TagSize = 16;
+    public const string Prefix = "ENC:";
+
+    public static string Encrypt(string plainText)
     {
-        var path = configuration["DataProtection:KeysPath"]
-                   ?? Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "keys-DO-NOT-COMMIT");
-        return Path.GetFullPath(path);
+        if (string.IsNullOrEmpty(plainText)) return plainText;
+
+        var plainBytes = Encoding.UTF8.GetBytes(plainText);
+        var nonce = new byte[NonceSize];
+        RandomNumberGenerator.Fill(nonce);
+
+        var cipherBytes = new byte[plainBytes.Length];
+        var tag = new byte[TagSize];
+
+        using var aes = new AesGcm(StaticKey, TagSize);
+        aes.Encrypt(nonce, plainBytes, cipherBytes, tag);
+
+        var result = new byte[NonceSize + TagSize + cipherBytes.Length];
+        Buffer.BlockCopy(nonce, 0, result, 0, NonceSize);
+        Buffer.BlockCopy(tag, 0, result, NonceSize, TagSize);
+        Buffer.BlockCopy(cipherBytes, 0, result, NonceSize + TagSize, cipherBytes.Length);
+
+        return Prefix + Convert.ToBase64String(result);
     }
 
-    private static IDataProtector CreateProtector(IConfiguration configuration)
+    public static string Decrypt(string cipherText)
     {
-        var keysPath = GetKeysPath(configuration);
-        Directory.CreateDirectory(keysPath);
+        if (string.IsNullOrEmpty(cipherText) || !cipherText.StartsWith(Prefix))
+            return cipherText;
 
-        var provider = DataProtectionProvider.Create(
-            new DirectoryInfo(keysPath),
-            builder =>
-            {
-                builder.SetApplicationName("CorpWiki");
-
-                if (OperatingSystem.IsWindows())
-                {
-                    builder.ProtectKeysWithDpapiNG();
-                }
-            });
-
-        return provider.CreateProtector(Purpose);
-    }
-
-    public static string Protect(string plainText, IConfiguration configuration)
-    {
-        var protector = CreateProtector(configuration);
-        return EncryptedPrefix + protector.Protect(plainText);
-    }
-
-    public static string Resolve(string value, IConfiguration configuration)
-    {
-        if (string.IsNullOrEmpty(value) || !value.StartsWith(EncryptedPrefix, StringComparison.Ordinal))
-            return value;
-
-        var protector = CreateProtector(configuration);
-        var cipherText = value[EncryptedPrefix.Length..];
+        var actualCipher = cipherText.Substring(Prefix.Length);
 
         try
         {
-            return protector.Unprotect(cipherText);
+            var fullBytes = Convert.FromBase64String(actualCipher);
+            if (fullBytes.Length < NonceSize + TagSize) return cipherText;
+
+            var nonce = new byte[NonceSize];
+            var tag = new byte[TagSize];
+            var cipherBytes = new byte[fullBytes.Length - NonceSize - TagSize];
+
+            Buffer.BlockCopy(fullBytes, 0, nonce, 0, NonceSize);
+            Buffer.BlockCopy(fullBytes, NonceSize, tag, 0, TagSize);
+            Buffer.BlockCopy(fullBytes, NonceSize + TagSize, cipherBytes, 0, cipherBytes.Length);
+
+            var plainBytes = new byte[cipherBytes.Length];
+
+            using var aes = new AesGcm(StaticKey, TagSize);
+            aes.Decrypt(nonce, cipherBytes, tag, plainBytes);
+
+            return Encoding.UTF8.GetString(plainBytes);
         }
-        catch (CryptographicException ex)
+        catch
         {
-            throw new InvalidOperationException(
-                "No se pudo descifrar la cadena de conexión. " +
-                "Verifique que DataProtection:KeysPath sea la misma carpeta con la que se cifró originalmente.", ex);
+            return cipherText;
         }
     }
 }
@@ -74,34 +79,23 @@ public static class ConnectionStringProtector
 
 
 
-"DataProtection": {
-    "KeysPath": "C:\\CorpWikiKeys"
-  }
 
 
 
+var provider = configuration["DatabaseProvider"] ?? "MySQL";
+var rawConnectionString = configuration.GetConnectionString(provider);
 
-
-var connectionStringRaw = configuration.GetConnectionString(provider);
-
-
-
-var connectionString = ConnectionStringProtector.Resolve(connectionStringRaw, configuration);
-
-
-
-if (args.Length == 2 && args[0].Equals("encrypt", StringComparison.OrdinalIgnoreCase))
+if (string.IsNullOrWhiteSpace(rawConnectionString))
 {
-    var tempConfig = new ConfigurationBuilder()
-        .SetBasePath(Directory.GetCurrentDirectory())
-        .AddJsonFile("appsettings.json", optional: true)
-        .Build();
-
-    var encrypted = CorpWiki.Infrastructure.Security.ConnectionStringProtector.Protect(args[1], tempConfig);
-    Console.WriteLine("Pega esto en appsettings.json:");
-    Console.WriteLine(encrypted);
-    return;
+    throw new InvalidOperationException(
+        $"No se encontró ConnectionString para el proveedor '{provider}'. " +
+        $"Verifique la sección ConnectionStrings:{provider} en appsettings.json.");
 }
+
+// Si viene con prefijo ENC: se desencripta; si no, se usa tal cual (útil en dev)
+var connectionString = ConfigObfuscator.Decrypt(rawConnectionString);
+
+
 
 
 
