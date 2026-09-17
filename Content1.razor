@@ -1,108 +1,38 @@
-public static class ConnectionStringProtector
-{
-    // Clave fija de 32 bytes en Base64
-    private static readonly byte[] StaticKey = Convert.FromBase64String("z9xO7vP1/qK4mO2jL8nB5aC0fR3uW6xY9sV2oE5hHIg=");
+$plainText = 'Data Source=HNCSTG010200AP\HNCSTG010200AP;Initial Catalog=daviwiki;User Id=34002092;Password=hnntrT1834m6a;TrustServerCertificate=True;'
 
-    public static string DecryptConnectionString(string? connectionString)
-    {
-        if (string.IsNullOrWhiteSpace(connectionString))
-            return string.Empty;
-
-        // Si la cadena no está encriptada, la retorna intacta
-        if (!connectionString.StartsWith("ENC(", StringComparison.OrdinalIgnoreCase) && 
-            !connectionString.StartsWith("ENC:", StringComparison.OrdinalIgnoreCase))
-        {
-            return connectionString;
-        }
-
-        // Extraer el texto base64 dentro de ENC(...) o después de ENC:
-        string cipherTextBase64 = connectionString;
-        if (cipherTextBase64.StartsWith("ENC(", StringComparison.OrdinalIgnoreCase) && cipherTextBase64.EndsWith(")"))
-        {
-            cipherTextBase64 = cipherTextBase64.Substring(4, cipherTextBase64.Length - 5);
-        }
-        else if (cipherTextBase64.StartsWith("ENC:", StringComparison.OrdinalIgnoreCase))
-        {
-            cipherTextBase64 = cipherTextBase64.Substring(4);
-        }
-
-        return DecryptAesGcm(cipherTextBase64.Trim());
-    }
-
-    private static string DecryptAesGcm(string cipherTextBase64)
-    {
-        byte[] fullBytes = Convert.FromBase64String(cipherTextBase64);
-
-        // Estructura: Nonce (12 bytes) + Tag (16 bytes) + CipherText
-        ReadOnlySpan<byte> nonce = fullBytes.AsSpan(0, 12);
-        ReadOnlySpan<byte> tag = fullBytes.AsSpan(12, 16);
-        ReadOnlySpan<byte> cipherBytes = fullBytes.AsSpan(28);
-
-        byte[] decryptedBytes = new byte[cipherBytes.Length];
-
-        using var aesGcm = new AesGcm(StaticKey, 16);
-        aesGcm.Decrypt(nonce, cipherBytes, tag, decryptedBytes);
-
-        return Encoding.UTF8.GetString(decryptedBytes);
-    }
-}
-
-
-
-
-
-
-
-dotnet script -e '
+$code = @"
 using System;
 using System.Security.Cryptography;
 using System.Text;
 
-byte[] key = Convert.FromBase64String("z9xO7vP1/qK4mO2jL8nB5aC0fR3uW6xY9sV2oE5hHIg=");
-string plainText = @"Data Source=HNCSTG010200AP\HNCSTG010200AP;Initial Catalog=daviwiki;User Id=34002092;Password=hnntrT1834m6a;TrustServerCertificate=True;";
-
-byte[] plainBytes = Encoding.UTF8.GetBytes(plainText);
-byte[] nonce = new byte[12];
-byte[] tag = new byte[16];
-byte[] cipherBytes = new byte[plainBytes.Length];
-
-RandomNumberGenerator.Fill(nonce);
-
-using (var aesGcm = new AesGcm(key, 16)) {
-    aesGcm.Encrypt(nonce, plainBytes, cipherBytes, tag);
-}
-
-byte[] result = new byte[12 + 16 + cipherBytes.Length];
-Buffer.BlockCopy(nonce, 0, result, 0, 12);
-Buffer.BlockCopy(tag, 0, result, 12, 16);
-Buffer.BlockCopy(cipherBytes, 0, result, 28, cipherBytes.Length);
-
-Console.WriteLine("ENC(" + Convert.ToBase64String(result) + ")");
-'
-
-
-
-
-
-$plainText = 'Data Source=HNCSTG010200AP\HNCSTG010200AP;Initial Catalog=daviwiki;User Id=34002092;Password=hnntrT1834m6a;TrustServerCertificate=True;'
-$code = @"
-using System; using System.Security.Cryptography; using System.Text;
 public class Enc {
     public static string Run(string plainText) {
         byte[] key = Convert.FromBase64String("z9xO7vP1/qK4mO2jL8nB5aC0fR3uW6xY9sV2oE5hHIg=");
         byte[] plainBytes = Encoding.UTF8.GetBytes(plainText);
-        byte[] nonce = new byte[12]; byte[] tag = new byte[16]; byte[] cipherBytes = new byte[plainBytes.Length];
+        byte[] nonce = new byte[12];
+        byte[] tag = new byte[16];
+        byte[] cipherBytes = new byte[plainBytes.Length];
+        
         RandomNumberGenerator.Fill(nonce);
-        using (var aes = new AesGcm(key, 16)) { aes.Encrypt(nonce, plainBytes, cipherBytes, tag); }
+        using (var aes = new AesGcm(key, 16)) { 
+            aes.Encrypt(nonce, plainBytes, cipherBytes, tag); 
+        }
+        
         byte[] res = new byte[28 + cipherBytes.Length];
-        Buffer.BlockCopy(nonce, 0, res, 0, 12); Buffer.BlockCopy(tag, 0, res, 12, 16); Buffer.BlockCopy(cipherBytes, 0, res, 28, cipherBytes.Length);
+        Buffer.BlockCopy(nonce, 0, res, 0, 12);
+        Buffer.BlockCopy(tag, 0, res, 12, 16);
+        Buffer.BlockCopy(cipherBytes, 0, res, 28, cipherBytes.Length);
+        
         return "ENC(" + Convert.ToBase64String(res) + ")";
     }
 }
 "@
+
 Add-Type -TypeDefinition $code
-[Enc]::Run($plainText)
+$resultado = [Enc]::Run($plainText)
 
+Write-Host "`n================ Cadena Encriptada ================" -ForegroundColor Green
+Write-Host $resultado -ForegroundColor Yellow
+Write-Host "====================================================`n"
 
-
-
+Read-Host "Presiona Enter para cerrar esta ventana..."
