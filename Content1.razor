@@ -1,186 +1,31 @@
-using CorpWiki.Domain.Entities.Security;
-
-namespace CorpWiki.Domain.Entities.Incidents;
-
-/// <summary>
-/// Tabla puente Incidencia-Usuario (N:N). Reemplaza el uso de IncidentUser:
-/// ahora una incidencia puede tener varios SecurityUser participando
-/// (responsable, colaborador, observador) y un SecurityUser puede estar
-/// en muchas incidencias simultáneamente.
-/// </summary>
-public class IncidentParticipant
-{
-    public Guid Id { get; set; }
-
-    public Guid IncidentId { get; set; }
-    public Incident Incident { get; set; } = null!;
-
-    public Guid SecurityUserId { get; set; }
-    public SecurityUser SecurityUser { get; set; } = null!;
-
-    public IncidentParticipantRole Role { get; set; } = IncidentParticipantRole.Colaborador;
-
-    public DateTime AssignedAt { get; set; } = DateTime.UtcNow;
-
-    /// <summary>Soft-remove: no se borra el registro para no perder historial.</summary>
-    public DateTime? RemovedAt { get; set; }
-}
-
-public enum IncidentParticipantRole
-{
-    Responsable,
-    Colaborador,
-    Observador
-}
-
-
-
-
-using CorpWiki.Domain.Entities.Security;
-
-namespace CorpWiki.Domain.Entities.Incidents;
-
-public class Incident
-{
-    public Guid Id { get; set; }
-    public string Code { get; set; } = string.Empty;
-    public string Title { get; set; } = string.Empty;
-    public string Description { get; set; } = string.Empty;
-
-    public Guid OriginAreaId { get; set; }
-    public Guid CurrentAreaId { get; set; }
-
-    public Guid? CurrentResponsibleId { get; set; }
-    public SecurityUser? CurrentResponsible { get; set; }
-
-    public Guid CreatedByUserId { get; set; }
-    public SecurityUser? CreatedByUser { get; set; }
-
-    public IncidentStatus Status { get; set; } = IncidentStatus.Nueva;
-    public IncidentPriority Priority { get; set; } = IncidentPriority.Media;
-    public DateTime CreatedAt { get; set; }
-    public DateTime UpdatedAt { get; set; }
-    public DateTime? ClosedAt { get; set; }
-    public List<ArticleContentBlock> Content { get; set; } = new();
-
-    public int ReactivationCount { get; set; }
-    public List<Guid> RelatedArticleIds { get; set; } = new();
-
-    /// <summary>Usuarios asociados a la incidencia (N:N vía IncidentParticipant).</summary>
-    public List<IncidentParticipant> Participants { get; set; } = new();
-}
-
-
-public List<IncidentParticipant> IncidentParticipations { get; set; } = new();
-
 using CorpWiki.Domain.Entities.Incidents;
+using CorpWiki.Domain.Entities.Security;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
 namespace CorpWiki.Infrastructure.Persistence.Configurations.Incidents;
 
-public class IncidentConfiguration : IEntityTypeConfiguration<Incident>
+public class IncidentAttachmentConfiguration : IEntityTypeConfiguration<IncidentAttachment>
 {
-    public void Configure(EntityTypeBuilder<Incident> builder)
+    public void Configure(EntityTypeBuilder<IncidentAttachment> builder)
     {
-        builder.ToTable("Incidents");
-        builder.HasKey(i => i.Id);
+        builder.ToTable("IncidentAttachments");
+        builder.HasKey(a => a.Id);
 
-        builder.Property(i => i.Code).HasMaxLength(20).IsRequired();
-        builder.Property(i => i.Title).HasMaxLength(200).IsRequired();
-        builder.Property(i => i.Description).HasColumnType("nvarchar(max)");
-
-        // Usa el mismo conversor JSON que ya tengas para Article.Content
-        builder.Property(i => i.Content).HasColumnType("nvarchar(max)");
-
-        builder.HasOne<Area>()
-            .WithMany()
-            .HasForeignKey(i => i.OriginAreaId)
-            .OnDelete(DeleteBehavior.Restrict);
-
-        builder.HasOne<Area>()
-            .WithMany()
-            .HasForeignKey(i => i.CurrentAreaId)
-            .OnDelete(DeleteBehavior.Restrict);
-
-        builder.HasOne(i => i.CreatedByUser)
-            .WithMany()
-            .HasForeignKey(i => i.CreatedByUserId)
-            .OnDelete(DeleteBehavior.Restrict);
-
-        builder.HasOne(i => i.CurrentResponsible)
-            .WithMany()
-            .HasForeignKey(i => i.CurrentResponsibleId)
-            .IsRequired(false)
-            .OnDelete(DeleteBehavior.Restrict);
-
-        builder.HasMany(i => i.Participants)
-            .WithOne(p => p.Incident)
-            .HasForeignKey(p => p.IncidentId)
-            .OnDelete(DeleteBehavior.Cascade);
-    }
-}
-
-
-
-
-using CorpWiki.Domain.Entities.Incidents;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Metadata.Builders;
-
-namespace CorpWiki.Infrastructure.Persistence.Configurations.Incidents;
-
-public class IncidentParticipantConfiguration : IEntityTypeConfiguration<IncidentParticipant>
-{
-    public void Configure(EntityTypeBuilder<IncidentParticipant> builder)
-    {
-        builder.ToTable("IncidentParticipants");
-        builder.HasKey(p => p.Id);
-
-        builder.HasOne(p => p.Incident)
-            .WithMany(i => i.Participants)
-            .HasForeignKey(p => p.IncidentId)
-            .OnDelete(DeleteBehavior.Cascade);
-
-        // Restrict: si se borra un SecurityUser no queremos borrar en cascada
-        // el historial de incidencias en las que participó.
-        builder.HasOne(p => p.SecurityUser)
-            .WithMany(u => u.IncidentParticipations)
-            .HasForeignKey(p => p.SecurityUserId)
-            .OnDelete(DeleteBehavior.Restrict);
-
-        builder.Property(p => p.Role)
-            .HasConversion<string>()
-            .HasMaxLength(30);
-
-        // Evita duplicar el mismo usuario activo dos veces en la misma incidencia
-        builder.HasIndex(p => new { p.IncidentId, p.SecurityUserId })
-            .HasFilter("[RemovedAt] IS NULL")
-            .IsUnique();
-    }
-}
-
-
-
-
-
-
-public class IncidentCommentConfiguration : IEntityTypeConfiguration<IncidentComment>
-{
-    public void Configure(EntityTypeBuilder<IncidentComment> builder)
-    {
-        builder.ToTable("IncidentComments");
-        builder.HasKey(c => c.Id);
-        builder.Property(c => c.Text).HasColumnType("nvarchar(max)");
+        builder.Property(a => a.FileName).HasMaxLength(260).IsRequired();
+        builder.Property(a => a.FileType).HasMaxLength(20).IsRequired();
+        builder.Property(a => a.SizeLabel).HasMaxLength(20);
 
         builder.HasOne<Incident>()
             .WithMany()
-            .HasForeignKey(c => c.IncidentId)
+            .HasForeignKey(a => a.IncidentId)
+            .HasConstraintName("FK_IncidentAttachments_Incidents")
             .OnDelete(DeleteBehavior.Cascade);
 
         builder.HasOne<SecurityUser>()
             .WithMany()
-            .HasForeignKey(c => c.AuthorUserId)
+            .HasForeignKey(a => a.UploadedByUserId)
+            .HasConstraintName("FK_IncidentAttachments_SecurityUsers_UploadedBy")
             .OnDelete(DeleteBehavior.Restrict);
     }
 }
@@ -188,17 +33,95 @@ public class IncidentCommentConfiguration : IEntityTypeConfiguration<IncidentCom
 
 
 
-public DbSet<Incident> Incidents => Set<Incident>();
-public DbSet<IncidentParticipant> IncidentParticipants => Set<IncidentParticipant>();
-public DbSet<IncidentComment> IncidentComments => Set<IncidentComment>();
-public DbSet<IncidentAttachment> IncidentAttachments => Set<IncidentAttachment>();
-public DbSet<IncidentTransfer> IncidentTransfers => Set<IncidentTransfer>();
-public DbSet<IncidentActivityEntry> IncidentActivityEntries => Set<IncidentActivityEntry>();
-public DbSet<Area> Areas => Set<Area>();
-// Elimina: public DbSet<IncidentUser> IncidentUsers => Set<IncidentUser>();
 
 
-// antes: IReadOnlyList<IncidentUser> GetUsers();
-IReadOnlyList<SecurityUser> GetParticipants(Guid incidentId);
-void AddParticipant(Guid incidentId, Guid securityUserId, IncidentParticipantRole role, Guid actorUserId);
-void RemoveParticipant(Guid incidentId, Guid securityUserId, Guid actorUserId);
+using CorpWiki.Domain.Entities.Incidents;
+using CorpWiki.Domain.Entities.Security;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+
+namespace CorpWiki.Infrastructure.Persistence.Configurations.Incidents;
+
+public class IncidentTransferConfiguration : IEntityTypeConfiguration<IncidentTransfer>
+{
+    public void Configure(EntityTypeBuilder<IncidentTransfer> builder)
+    {
+        builder.ToTable("IncidentTransfers");
+        builder.HasKey(t => t.Id);
+
+        builder.Property(t => t.Reason).HasMaxLength(500);
+
+        builder.HasOne<Incident>()
+            .WithMany()
+            .HasForeignKey(t => t.IncidentId)
+            .HasConstraintName("FK_IncidentTransfers_Incidents")
+            .OnDelete(DeleteBehavior.Cascade);
+
+        // --- Aquí está el caso de las dos FK al mismo tipo ---
+
+        builder.HasOne<SecurityUser>()
+            .WithMany()
+            .HasForeignKey(t => t.FromUserId)
+            .HasConstraintName("FK_IncidentTransfers_SecurityUsers_FromUser")
+            .OnDelete(DeleteBehavior.Restrict);
+
+        builder.HasOne<SecurityUser>()
+            .WithMany()
+            .HasForeignKey(t => t.ToUserId)
+            .HasConstraintName("FK_IncidentTransfers_SecurityUsers_ToUser")
+            .OnDelete(DeleteBehavior.Restrict);
+
+        // Áreas: mismo caso, dos FK al mismo tipo (FromAreaId / ToAreaId)
+        builder.HasOne<Area>()
+            .WithMany()
+            .HasForeignKey(t => t.FromAreaId)
+            .HasConstraintName("FK_IncidentTransfers_Areas_FromArea")
+            .OnDelete(DeleteBehavior.Restrict);
+
+        builder.HasOne<Area>()
+            .WithMany()
+            .HasForeignKey(t => t.ToAreaId)
+            .HasConstraintName("FK_IncidentTransfers_Areas_ToArea")
+            .OnDelete(DeleteBehavior.Restrict);
+    }
+}
+
+
+
+
+using CorpWiki.Domain.Entities.Incidents;
+using CorpWiki.Domain.Entities.Security;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+
+namespace CorpWiki.Infrastructure.Persistence.Configurations.Incidents;
+
+public class IncidentActivityEntryConfiguration : IEntityTypeConfiguration<IncidentActivityEntry>
+{
+    public void Configure(EntityTypeBuilder<IncidentActivityEntry> builder)
+    {
+        builder.ToTable("IncidentActivityEntries");
+        builder.HasKey(e => e.Id);
+
+        builder.Property(e => e.Description).HasMaxLength(1000);
+
+        builder.Property(e => e.Type)
+            .HasConversion<string>()
+            .HasMaxLength(30);
+
+        builder.HasOne<Incident>()
+            .WithMany()
+            .HasForeignKey(e => e.IncidentId)
+            .HasConstraintName("FK_IncidentActivityEntries_Incidents")
+            .OnDelete(DeleteBehavior.Cascade);
+
+        builder.HasOne<SecurityUser>()
+            .WithMany()
+            .HasForeignKey(e => e.ActorUserId)
+            .HasConstraintName("FK_IncidentActivityEntries_SecurityUsers_Actor")
+            .OnDelete(DeleteBehavior.Restrict);
+    }
+}
+
+
+
