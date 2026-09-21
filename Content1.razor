@@ -1,126 +1,89 @@
-using CorpWiki.Domain.Entities;
+@page "/incidencias"
+@attribute [Authorize(Policy = "INCIDENTS:READ")]
+@rendermode InteractiveServer
+@inject IIncidentService Incidents
+@inject NavigationManager Nav
+@using CorpWiki.Web.Extensions
+@using CorpWiki.Domain.Entities.Security
+@using CorpWiki.Application.Helpers
+<PageTitle>DaviWiki - Incidencias</PageTitle>
 
-namespace CorpWiki.Domain.Entities.Incidents;
+@* ... TODO EL HTML SE QUEDA IGUAL, no lo toques ... *@
 
-/// <summary>
-/// Tabla puente Incidencia-Artículo (N:N). Reemplaza a IncidentRelatedArticle:
-/// ahora una incidencia se vincula a artículos reales de la Wiki, y un mismo
-/// artículo puede estar relacionado con varias incidencias.
-/// </summary>
-public class IncidentArticleLink
-{
-    public Guid Id { get; set; }
+@code {
+    private IncidentKpiSnapshotDto _kpi = new();
+    private IReadOnlyList<IncidentActivityFeedDto> _recentActivity = new List<IncidentActivityFeedDto>();
+    private IReadOnlyList<Area> _areas = new List<Area>();
+    private IReadOnlyList<SecurityUser> _users = new List<SecurityUser>();
+    private int _totalIncidents;
 
-    public Guid IncidentId { get; set; }
-    public Incident Incident { get; set; } = null!;
+    private List<(string Label, double Value, string Color)> _statusSegments = new();
+    private List<(string Label, string ValueLabel, string Color)> _statusLegend = new();
+    private List<(string Label, double Value, string Color)> _prioritySegments = new();
+    private List<(string Label, string ValueLabel, string Color)> _priorityLegend = new();
 
-    public Guid ArticleId { get; set; }
-    public Article Article { get; set; } = null!;
+    protected override async Task OnInitializedAsync()
+    {
+        _areas = await Incidents.GetAreasAsync();
+        _users = await Incidents.GetUsersAsync();
+        _kpi = await Incidents.GetKpiSnapshotAsync();
+        _recentActivity = await Incidents.GetRecentActivityAsync(12);
+        _totalIncidents = _kpi.StatusDistribution.Sum(s => s.Count);
 
-    public Guid LinkedByUserId { get; set; }
-    public DateTime LinkedAt { get; set; } = DateTime.UtcNow;
+        foreach (var d in _kpi.StatusDistribution)
+        {
+            var color = $"var(--status-{IncidentCssHelpers.StatusSuffix(d.Status)})";
+            _statusSegments.Add((IncidentLabels.Status(d.Status), d.Count, color));
+            _statusLegend.Add((IncidentLabels.Status(d.Status), d.Count.ToString(), color));
+        }
+
+        foreach (var d in _kpi.PriorityDistribution)
+        {
+            var color = $"var(--priority-{IncidentCssHelpers.PrioritySuffix(d.Priority)})";
+            _prioritySegments.Add((IncidentLabels.Priority(d.Priority), d.Count, color));
+            _priorityLegend.Add((IncidentLabels.Priority(d.Priority), d.Count.ToString(), color));
+        }
+    }
+
+    private void GoToListadoByStatus(string label)
+    {
+        var match = _kpi.StatusDistribution.FirstOrDefault(d => IncidentLabels.Status(d.Status) == label);
+        if (match is null) return;
+        Nav.NavigateTo($"/incidencias/listado?estado={match.Status}");
+    }
+
+    private void GoToListadoByPriority(string label)
+    {
+        var match = _kpi.PriorityDistribution.FirstOrDefault(d => IncidentLabels.Priority(d.Priority) == label);
+        if (match is null) return;
+        Nav.NavigateTo($"/incidencias/listado?prioridad={match.Priority}");
+    }
+
+    private void GoToListadoByArea(string areaName) =>
+        Nav.NavigateTo($"/incidencias/listado?area={Uri.EscapeDataString(areaName)}");
+
+    private void GoToListadoByResponsible(string userName) =>
+        Nav.NavigateTo($"/incidencias/listado?buscar={Uri.EscapeDataString(userName)}");
 }
 
 
-
-
-
-
-
-using CorpWiki.Domain.Entities;
-using CorpWiki.Domain.Entities.Incidents;
-using CorpWiki.Domain.Entities.Security;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Metadata.Builders;
-
-namespace CorpWiki.Infrastructure.Persistence.Configurations.Incidents;
-
-public class IncidentArticleLinkConfiguration : IEntityTypeConfiguration<IncidentArticleLink>
+protected override async Task OnInitializedAsync()
 {
-    public void Configure(EntityTypeBuilder<IncidentArticleLink> builder)
+    _statusFilter = QueryStatus ?? string.Empty;
+    _priorityFilter = QueryPriority ?? string.Empty;
+    _areaFilter = QueryArea ?? string.Empty;
+    _search = QuerySearch ?? string.Empty;
+
+    _all = await Incidents.GetIncidentSummariesAsync();
+    _areas = await Incidents.GetAreasAsync();
+
+    foreach (var status in Enum.GetValues<IncidentStatus>())
     {
-        builder.ToTable("IncidentArticleLinks");
-        builder.HasKey(l => l.Id);
+        var count = _all.Count(i => i.Status == status);
+        if (count == 0) continue;
 
-        builder.HasOne(l => l.Incident)
-            .WithMany(i => i.RelatedArticles)
-            .HasForeignKey(l => l.IncidentId)
-            .HasConstraintName("FK_IncidentArticleLinks_Incidents")
-            .OnDelete(DeleteBehavior.Cascade);
-
-        // Restrict: no queremos que borrar un Article se lleve en cascada
-        // el historial de vínculos con incidencias.
-        builder.HasOne(l => l.Article)
-            .WithMany()
-            .HasForeignKey(l => l.ArticleId)
-            .HasConstraintName("FK_IncidentArticleLinks_Articles")
-            .OnDelete(DeleteBehavior.Restrict);
-
-        builder.HasOne<SecurityUser>()
-            .WithMany()
-            .HasForeignKey(l => l.LinkedByUserId)
-            .HasConstraintName("FK_IncidentArticleLinks_SecurityUsers")
-            .OnDelete(DeleteBehavior.Restrict);
-
-        // Evita vincular el mismo artículo dos veces a la misma incidencia.
-        builder.HasIndex(l => new { l.IncidentId, l.ArticleId }).IsUnique();
+        var color = $"var(--status-{IncidentCssHelpers.StatusSuffix(status)})";
+        _statusBarSegments.Add((IncidentLabels.Status(status), count, color));
+        _statusChips.Add((IncidentLabels.Status(status), status.ToString(), count, color));
     }
 }
-
-
-
-
-Task<IReadOnlyList<Article>> GetRelatedArticlesAsync(Guid incidentId);
-Task LinkArticleAsync(Guid incidentId, Guid articleId, Guid actorUserId);
-Task UnlinkArticleAsync(Guid incidentId, Guid articleId, Guid actorUserId);
-
-
-
-
-public async Task<IReadOnlyList<Article>> GetRelatedArticlesAsync(Guid incidentId)
-{
-    return await _db.IncidentArticleLinks
-        .Where(l => l.IncidentId == incidentId)
-        .Include(l => l.Article)
-        .Select(l => l.Article)
-        .ToListAsync();
-}
-
-public async Task LinkArticleAsync(Guid incidentId, Guid articleId, Guid actorUserId)
-{
-    var exists = await _db.IncidentArticleLinks.AnyAsync(l =>
-        l.IncidentId == incidentId && l.ArticleId == articleId);
-    if (exists) return;
-
-    _db.IncidentArticleLinks.Add(new IncidentArticleLink
-    {
-        Id = Guid.NewGuid(),
-        IncidentId = incidentId,
-        ArticleId = articleId,
-        LinkedByUserId = actorUserId,
-        LinkedAt = DateTime.Now
-    });
-
-    var actor = await GetUserByIdAsync(actorUserId);
-    var article = await _db.Articles.FirstOrDefaultAsync(a => a.Id == articleId);
-    await LogActivityAsync(incidentId, IncidentActivityType.Editada, actorUserId,
-        $"{actor?.FullName ?? "-"} vinculó el artículo \"{article?.Title ?? "-"}\".", DateTime.Now);
-
-    await _db.SaveChangesAsync();
-}
-
-public async Task UnlinkArticleAsync(Guid incidentId, Guid articleId, Guid actorUserId)
-{
-    var link = await _db.IncidentArticleLinks.FirstOrDefaultAsync(l =>
-        l.IncidentId == incidentId && l.ArticleId == articleId);
-    if (link == null) return;
-
-    _db.IncidentArticleLinks.Remove(link);
-
-    var actor = await GetUserByIdAsync(actorUserId);
-    await LogActivityAsync(incidentId, IncidentActivityType.Editada, actorUserId,
-        $"{actor?.FullName ?? "-"} quitó un artículo relacionado.", DateTime.Now);
-
-    await _db.SaveChangesAsync();
-}
-
