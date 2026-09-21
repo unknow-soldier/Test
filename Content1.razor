@@ -1,89 +1,90 @@
-@page "/incidencias"
-@attribute [Authorize(Policy = "INCIDENTS:READ")]
-@rendermode InteractiveServer
-@inject IIncidentService Incidents
-@inject NavigationManager Nav
-@using CorpWiki.Web.Extensions
-@using CorpWiki.Domain.Entities.Security
-@using CorpWiki.Application.Helpers
-<PageTitle>DaviWiki - Incidencias</PageTitle>
-
-@* ... TODO EL HTML SE QUEDA IGUAL, no lo toques ... *@
-
 @code {
-    private IncidentKpiSnapshotDto _kpi = new();
-    private IReadOnlyList<IncidentActivityFeedDto> _recentActivity = new List<IncidentActivityFeedDto>();
-    private IReadOnlyList<Area> _areas = new List<Area>();
-    private IReadOnlyList<SecurityUser> _users = new List<SecurityUser>();
-    private int _totalIncidents;
+    private readonly List<string> _steps = new() { "Qué pasó", "Área y gravedad", "Personas", "Confirmar" };
+    private int _step;
+    private string? _error;
 
-    private List<(string Label, double Value, string Color)> _statusSegments = new();
-    private List<(string Label, string ValueLabel, string Color)> _statusLegend = new();
-    private List<(string Label, double Value, string Color)> _prioritySegments = new();
-    private List<(string Label, string ValueLabel, string Color)> _priorityLegend = new();
+    private List<Area> _areas = new();
+    private List<SecurityUser> _users = new();
+    private List<SecurityUser> _responsibleOptions = new();
 
+    private readonly CreateIncidentViewModel _model = new();
+
+    // 1. Carga de datos inicial asíncrona
     protected override async Task OnInitializedAsync()
     {
-        _areas = await Incidents.GetAreasAsync();
-        _users = await Incidents.GetUsersAsync();
-        _kpi = await Incidents.GetKpiSnapshotAsync();
-        _recentActivity = await Incidents.GetRecentActivityAsync(12);
-        _totalIncidents = _kpi.StatusDistribution.Sum(s => s.Count);
+        _areas = (await Incidents.GetAreasAsync()).ToList();
+        _users = (await Incidents.GetUsersAsync()).OrderBy(u => u.FullName).ToList();
+    }
 
-        foreach (var d in _kpi.StatusDistribution)
+    // 2. Cambio de área asíncrono al filtrar responsables
+    private async Task OnAreaChanged(ChangeEventArgs e)
+    {
+        _model.AreaId = Guid.TryParse(e.Value?.ToString(), out var areaId) ? areaId : null;
+        _model.ResponsibleUserId = null;
+
+        if (_model.AreaId.HasValue)
         {
-            var color = $"var(--status-{IncidentCssHelpers.StatusSuffix(d.Status)})";
-            _statusSegments.Add((IncidentLabels.Status(d.Status), d.Count, color));
-            _statusLegend.Add((IncidentLabels.Status(d.Status), d.Count.ToString(), color));
+            var usersByArea = await Incidents.GetUsersByAreaAsync(_model.AreaId.Value);
+            _responsibleOptions = usersByArea.OrderBy(u => u.FullName).ToList();
+        }
+        else
+        {
+            _responsibleOptions = new();
+        }
+    }
+
+    private void NextStep()
+    {
+        _error = null;
+
+        if (_step == 0 && (string.IsNullOrWhiteSpace(_model.Title) || string.IsNullOrWhiteSpace(_model.Description)))
+        {
+            _error = "Completá el título y la descripción antes de continuar.";
+            return;
         }
 
-        foreach (var d in _kpi.PriorityDistribution)
+        if (_step == 1 && !_model.AreaId.HasValue)
         {
-            var color = $"var(--priority-{IncidentCssHelpers.PrioritySuffix(d.Priority)})";
-            _prioritySegments.Add((IncidentLabels.Priority(d.Priority), d.Count, color));
-            _priorityLegend.Add((IncidentLabels.Priority(d.Priority), d.Count.ToString(), color));
+            _error = "Seleccioná el área responsable antes de continuar.";
+            return;
         }
+
+        if (_step == 2 && !_model.CreatedByUserId.HasValue)
+        {
+            _error = "Seleccioná quién reporta la incidencia antes de continuar.";
+            return;
+        }
+
+        _step = Math.Min(_step + 1, _steps.Count - 1);
     }
 
-    private void GoToListadoByStatus(string label)
+    private void PrevStep()
     {
-        var match = _kpi.StatusDistribution.FirstOrDefault(d => IncidentLabels.Status(d.Status) == label);
-        if (match is null) return;
-        Nav.NavigateTo($"/incidencias/listado?estado={match.Status}");
+        _error = null;
+        _step = Math.Max(_step - 1, 0);
     }
 
-    private void GoToListadoByPriority(string label)
+    // 3. Persistencia asíncrona llamando a CreateIncidentAsync
+    private async Task Save()
     {
-        var match = _kpi.PriorityDistribution.FirstOrDefault(d => IncidentLabels.Priority(d.Priority) == label);
-        if (match is null) return;
-        Nav.NavigateTo($"/incidencias/listado?prioridad={match.Priority}");
-    }
+        if (!_model.AreaId.HasValue || !_model.CreatedByUserId.HasValue ||
+            string.IsNullOrWhiteSpace(_model.Title) || string.IsNullOrWhiteSpace(_model.Description))
+        {
+            _error = "Faltan datos obligatorios. Revisá los pasos anteriores.";
+            return;
+        }
 
-    private void GoToListadoByArea(string areaName) =>
-        Nav.NavigateTo($"/incidencias/listado?area={Uri.EscapeDataString(areaName)}");
+        var created = await Incidents.CreateIncidentAsync(
+            _model.Title,
+            _model.Description,
+            _model.AreaId.Value,
+            _model.Priority,
+            _model.CreatedByUserId.Value,
+            _model.ResponsibleUserId,
+            _model.Content);
 
-    private void GoToListadoByResponsible(string userName) =>
-        Nav.NavigateTo($"/incidencias/listado?buscar={Uri.EscapeDataString(userName)}");
-}
+        Toast.Show("Incidencia creada correctamente.", ToastVariant.Success, "plus-circle");
 
-
-protected override async Task OnInitializedAsync()
-{
-    _statusFilter = QueryStatus ?? string.Empty;
-    _priorityFilter = QueryPriority ?? string.Empty;
-    _areaFilter = QueryArea ?? string.Empty;
-    _search = QuerySearch ?? string.Empty;
-
-    _all = await Incidents.GetIncidentSummariesAsync();
-    _areas = await Incidents.GetAreasAsync();
-
-    foreach (var status in Enum.GetValues<IncidentStatus>())
-    {
-        var count = _all.Count(i => i.Status == status);
-        if (count == 0) continue;
-
-        var color = $"var(--status-{IncidentCssHelpers.StatusSuffix(status)})";
-        _statusBarSegments.Add((IncidentLabels.Status(status), count, color));
-        _statusChips.Add((IncidentLabels.Status(status), status.ToString(), count, color));
+        Nav.NavigateTo($"/incidencias/{created.Id}");
     }
 }
