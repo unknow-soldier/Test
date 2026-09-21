@@ -1,3 +1,33 @@
+using CorpWiki.Domain.Entities;
+
+namespace CorpWiki.Domain.Entities.Incidents;
+
+/// <summary>
+/// Tabla puente Incidencia-Artículo (N:N). Reemplaza a IncidentRelatedArticle:
+/// ahora una incidencia se vincula a artículos reales de la Wiki, y un mismo
+/// artículo puede estar relacionado con varias incidencias.
+/// </summary>
+public class IncidentArticleLink
+{
+    public Guid Id { get; set; }
+
+    public Guid IncidentId { get; set; }
+    public Incident Incident { get; set; } = null!;
+
+    public Guid ArticleId { get; set; }
+    public Article Article { get; set; } = null!;
+
+    public Guid LinkedByUserId { get; set; }
+    public DateTime LinkedAt { get; set; } = DateTime.UtcNow;
+}
+
+
+
+
+
+
+
+using CorpWiki.Domain.Entities;
 using CorpWiki.Domain.Entities.Incidents;
 using CorpWiki.Domain.Entities.Security;
 using Microsoft.EntityFrameworkCore;
@@ -5,63 +35,92 @@ using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
 namespace CorpWiki.Infrastructure.Persistence.Configurations.Incidents;
 
-public class IncidentTimeSegmentConfiguration : IEntityTypeConfiguration<IncidentTimeSegment>
+public class IncidentArticleLinkConfiguration : IEntityTypeConfiguration<IncidentArticleLink>
 {
-    public void Configure(EntityTypeBuilder<IncidentTimeSegment> builder)
+    public void Configure(EntityTypeBuilder<IncidentArticleLink> builder)
     {
-        builder.ToTable("IncidentTimeSegments");
-        builder.HasKey(s => s.Id);
+        builder.ToTable("IncidentArticleLinks");
+        builder.HasKey(l => l.Id);
 
-        // Duration es una propiedad calculada en memoria (no persistida).
-        builder.Ignore(s => s.Duration);
-
-        builder.HasOne<Incident>()
-            .WithMany()
-            .HasForeignKey(s => s.IncidentId)
-            .HasConstraintName("FK_IncidentTimeSegments_Incidents")
+        builder.HasOne(l => l.Incident)
+            .WithMany(i => i.RelatedArticles)
+            .HasForeignKey(l => l.IncidentId)
+            .HasConstraintName("FK_IncidentArticleLinks_Incidents")
             .OnDelete(DeleteBehavior.Cascade);
 
-        builder.HasOne<Area>()
+        // Restrict: no queremos que borrar un Article se lleve en cascada
+        // el historial de vínculos con incidencias.
+        builder.HasOne(l => l.Article)
             .WithMany()
-            .HasForeignKey(s => s.AreaId)
-            .HasConstraintName("FK_IncidentTimeSegments_Areas")
+            .HasForeignKey(l => l.ArticleId)
+            .HasConstraintName("FK_IncidentArticleLinks_Articles")
             .OnDelete(DeleteBehavior.Restrict);
 
         builder.HasOne<SecurityUser>()
             .WithMany()
-            .HasForeignKey(s => s.UserId)
-            .HasConstraintName("FK_IncidentTimeSegments_SecurityUsers")
-            .IsRequired(false)
+            .HasForeignKey(l => l.LinkedByUserId)
+            .HasConstraintName("FK_IncidentArticleLinks_SecurityUsers")
             .OnDelete(DeleteBehavior.Restrict);
 
-        builder.HasIndex(s => new { s.IncidentId, s.StartedAt });
+        // Evita vincular el mismo artículo dos veces a la misma incidencia.
+        builder.HasIndex(l => new { l.IncidentId, l.ArticleId }).IsUnique();
     }
 }
 
 
 
 
+Task<IReadOnlyList<Article>> GetRelatedArticlesAsync(Guid incidentId);
+Task LinkArticleAsync(Guid incidentId, Guid articleId, Guid actorUserId);
+Task UnlinkArticleAsync(Guid incidentId, Guid articleId, Guid actorUserId);
 
 
-using CorpWiki.Domain.Entities.Incidents;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
-namespace CorpWiki.Infrastructure.Persistence.Configurations.Incidents;
 
-public class IncidentRelatedArticleConfiguration : IEntityTypeConfiguration<IncidentRelatedArticle>
+public async Task<IReadOnlyList<Article>> GetRelatedArticlesAsync(Guid incidentId)
 {
-    public void Configure(EntityTypeBuilder<IncidentRelatedArticle> builder)
-    {
-        builder.ToTable("IncidentRelatedArticles");
-        builder.HasKey(a => a.Id);
-
-        builder.Property(a => a.Title).HasMaxLength(300).IsRequired();
-        builder.Property(a => a.Url).HasMaxLength(500).IsRequired();
-        builder.Property(a => a.Icon).HasMaxLength(50).IsRequired();
-    }
+    return await _db.IncidentArticleLinks
+        .Where(l => l.IncidentId == incidentId)
+        .Include(l => l.Article)
+        .Select(l => l.Article)
+        .ToListAsync();
 }
 
-public DbSet<IncidentTimeSegment> IncidentTimeSegments => Set<IncidentTimeSegment>();
-public DbSet<IncidentRelatedArticle> IncidentRelatedArticles => Set<IncidentRelatedArticle>();
+public async Task LinkArticleAsync(Guid incidentId, Guid articleId, Guid actorUserId)
+{
+    var exists = await _db.IncidentArticleLinks.AnyAsync(l =>
+        l.IncidentId == incidentId && l.ArticleId == articleId);
+    if (exists) return;
+
+    _db.IncidentArticleLinks.Add(new IncidentArticleLink
+    {
+        Id = Guid.NewGuid(),
+        IncidentId = incidentId,
+        ArticleId = articleId,
+        LinkedByUserId = actorUserId,
+        LinkedAt = DateTime.Now
+    });
+
+    var actor = await GetUserByIdAsync(actorUserId);
+    var article = await _db.Articles.FirstOrDefaultAsync(a => a.Id == articleId);
+    await LogActivityAsync(incidentId, IncidentActivityType.Editada, actorUserId,
+        $"{actor?.FullName ?? "-"} vinculó el artículo \"{article?.Title ?? "-"}\".", DateTime.Now);
+
+    await _db.SaveChangesAsync();
+}
+
+public async Task UnlinkArticleAsync(Guid incidentId, Guid articleId, Guid actorUserId)
+{
+    var link = await _db.IncidentArticleLinks.FirstOrDefaultAsync(l =>
+        l.IncidentId == incidentId && l.ArticleId == articleId);
+    if (link == null) return;
+
+    _db.IncidentArticleLinks.Remove(link);
+
+    var actor = await GetUserByIdAsync(actorUserId);
+    await LogActivityAsync(incidentId, IncidentActivityType.Editada, actorUserId,
+        $"{actor?.FullName ?? "-"} quitó un artículo relacionado.", DateTime.Now);
+
+    await _db.SaveChangesAsync();
+}
 
