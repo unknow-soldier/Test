@@ -1,85 +1,21 @@
-@using CorpWiki.Domain.Entities.Security
+Task<bool> AssignAreaAsync(Guid userId, Guid areaId);
 
-@code {
-    private readonly List<string> _steps = new() { "Qué pasó", "Área y gravedad", "Personas", "Confirmar" };
-    private int _step;
-    private string? _error;
 
-    private List<Area> _areas = new();
-    private List<SecurityUser> _users = new();
-    private List<SecurityUser> _responsibleOptions = new();
 
-    private readonly CreateIncidentViewModel _model = new();
 
-    protected override async Task OnInitializedAsync()
-    {
-        _areas = (await Incidents.GetAreasAsync()).ToList();
-        _users = (await Incidents.GetUsersAsync()).OrderBy(u => u.FullName).ToList();
-    }
 
-    private async Task OnAreaChanged(ChangeEventArgs e)
-    {
-        _model.AreaId = Guid.TryParse(e.Value?.ToString(), out var areaId) ? areaId : null;
-        _model.ResponsibleUserId = null;
 
-        _responsibleOptions = _model.AreaId.HasValue
-            ? (await Incidents.GetUsersByAreaAsync(_model.AreaId.Value)).OrderBy(u => u.FullName).ToList()
-            : new();
-    }
 
-    private void NextStep()
-    {
-        _error = null;
+public async Task<bool> AssignAreaAsync(Guid userId, Guid areaId)
+{
+    var user = await _db.SecurityUsers.FirstOrDefaultAsync(u => u.Id == userId);
+    if (user == null) return false;
 
-        if (_step == 0 && (string.IsNullOrWhiteSpace(_model.Title) || string.IsNullOrWhiteSpace(_model.Description)))
-        {
-            _error = "Completá el título y la descripción antes de continuar.";
-            return;
-        }
+    user.AreaId = areaId;
+    await _db.SaveChangesAsync();
 
-        if (_step == 1 && !_model.AreaId.HasValue)
-        {
-            _error = "Seleccioná el área responsable antes de continuar.";
-            return;
-        }
-
-        if (_step == 2 && !_model.CreatedByUserId.HasValue)
-        {
-            _error = "Seleccioná quién reporta la incidencia antes de continuar.";
-            return;
-        }
-
-        _step = Math.Min(_step + 1, _steps.Count - 1);
-    }
-
-    private void PrevStep()
-    {
-        _error = null;
-        _step = Math.Max(_step - 1, 0);
-    }
-
-    private async Task Save()
-    {
-        if (!_model.AreaId.HasValue || !_model.CreatedByUserId.HasValue ||
-            string.IsNullOrWhiteSpace(_model.Title) || string.IsNullOrWhiteSpace(_model.Description))
-        {
-            _error = "Faltan datos obligatorios. Revisá los pasos anteriores.";
-            return;
-        }
-
-        var created = await Incidents.CreateIncidentAsync(
-            _model.Title,
-            _model.Description,
-            _model.AreaId.Value,
-            _model.Priority,
-            _model.CreatedByUserId.Value,
-            _model.ResponsibleUserId,
-            _model.Content);
-
-        Toast.Show("Incidencia creada correctamente.", ToastVariant.Success, "plus-circle");
-
-        Nav.NavigateTo($"/incidencias/{created.Id}");
-    }
+    await LogAuditAsync(userId, user.Username, "ASSIGN_AREA", $"Área asignada: {areaId}");
+    return true;
 }
 
 
@@ -87,420 +23,82 @@
 
 
 
-@if (_detail.RelatedArticles.Count > 0)
+@page "/"
+@inject ISecurityService Security
+@inject IIncidentService Incidents
+
+@* ... resto del Home ... *@
+
+@if (_showAreaModal)
 {
-    <div class="widget card">
-        <h4 class="widget__title"><Icon Name="file-text" />Artículos relacionados</h4>
-        @foreach (var article in _detail.RelatedArticles)
-        {
-            <a class="external-link-row" style="margin-bottom: var(--space-2);" href="@($"/articulos/{article.Slug}")">
-                <Icon Name="file-text" /> @article.Title
-            </a>
-        }
+    <div class="modal-overlay">
+        <div class="modal">
+            <div class="modal__header">
+                <h3>Seleccioná tu área</h3>
+            </div>
+            <div class="modal__body">
+                <p>Todavía no tenés un área asignada. Elegí la tuya para continuar usando el módulo de incidencias.</p>
+                <div class="form-group">
+                    <select class="input" @bind="_selectedAreaId">
+                        <option value="">Seleccioná un área</option>
+                        @foreach (var area in _areas)
+                        {
+                            <option value="@area.Id">@area.Name</option>
+                        }
+                    </select>
+                </div>
+                @if (!string.IsNullOrEmpty(_areaError))
+                {
+                    <p class="callout callout--danger">@_areaError</p>
+                }
+            </div>
+            <div class="modal__footer">
+                <button class="btn btn--primary btn--sm" @onclick="ConfirmArea">Confirmar</button>
+            </div>
+        </div>
     </div>
 }
 
-
-
-
-
-
-<option value="@u.Id">@u.FullName - @u.Position</option>
-
-
-
-
-
-
-
-
-@using CorpWiki.Domain.Entities.Security
-
 @code {
-    [Parameter] public Guid Id { get; set; }
-
-    private IncidentDetailDto? _detail;
+    private bool _showAreaModal;
     private List<Area> _areas = new();
-    private List<SecurityUser> _currentAreaUsers = new();
-    private List<BreadcrumbItem> _breadcrumb = new();
-    private List<(string AreaName, string Color, string Icon, bool IsCurrent)> _journey = new();
-    private List<(string Label, double Value, string Color)> _timeSegmentsChart = new();
-    private List<(string Label, double Value, string Color)> _areaTimeSegments = new();
-    private List<(string Label, string ValueLabel, string Color)> _areaTimeLegend = new();
-    private string _newComment = string.Empty;
-    private Guid? _assignUserId;
-    private IncidentStatus _newStatus;
-    private Guid? _transferAreaId;
-    private Guid? _transferUserId;
-    private string _transferReason = string.Empty;
-    private List<SecurityUser> _transferUserOptions = new();
-    private bool _showConfirmModal = false;
-    private string _confirmTitle = "";
-    private string _confirmMessage = "";
-    private string _confirmButtonText = "";
-    private string _confirmButtonClass = "";
-    private Func<Task>? _pendingAction;
+    private Guid? _selectedAreaId;
+    private string? _areaError;
+    private Guid _currentUserId;
 
-    private bool _showJourneyModal;
-    private int _journeyStepIndex;
-    private string _journeyDirection = "next";
-    private AreaStoryStep? _journeyStep;
-
-    private string _activeTab = "resumen";
-
-    private bool _isPlaying;
-    private int _playbackIndex = -1;
-    private bool _editingContent;
-    private List<ArticleContentBlock> _contentDraft = new();
-
-    private void SetTab(string tab) => _activeTab = tab;
-
-    private bool _isExpanded = false;
-    private void ToggleExpandModal() => _isExpanded = !_isExpanded;
-
-    private static string InitialsOf(string fullName)
+    protected override async Task OnInitializedAsync()
     {
-        if (string.IsNullOrWhiteSpace(fullName)) return "?";
-        var parts = fullName.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        return parts.Length switch
+        _currentUserId = await Security.GetCurrentUserIdAsync();
+        var user = await Security.GetUserByIdAsync(_currentUserId);
+
+        if (user != null && user.AreaId is null)
         {
-            0 => "?",
-            1 => parts[0].Length >= 2 ? parts[0][..2].ToUpperInvariant() : parts[0].ToUpperInvariant(),
-            _ => $"{parts[0][0]}{parts[^1][0]}".ToUpperInvariant()
-        };
-    }
-
-    private void StartEditContent()
-    {
-        if (_detail is null) return;
-        _contentDraft = _detail.Content.Select(b => new ArticleContentBlock
-        {
-            Id = b.Id,
-            Type = b.Type,
-            Order = b.Order,
-            Text = b.Text,
-            Meta = b.Meta,
-            Urls = new List<string>(b.Urls),
-            TableRows = b.TableRows.Select(r => new List<string>(r)).ToList()
-        }).ToList();
-        _editingContent = true;
-    }
-
-    private async Task SaveContent()
-    {
-        if (_detail is null) return;
-        await Incidents.UpdateIncidentContentAsync(_detail.Id, _contentDraft, ActorId);
-        _editingContent = false;
-        await LoadDetail();
-    }
-
-    private void CancelEditContent() => _editingContent = false;
-
-    private record AreaStoryStep(
-        string AreaName, string Color, string Icon,
-        double ActiveHours, double DeadHours,
-        List<IncidentActivityDto> Activity,
-        List<IncidentCommentDto> Comments,
-        List<IncidentTransferDto> Transfers,
-        List<SecurityUser> Users);
-
-    private async Task<AreaStoryStep> BuildAreaStoryAsync(string areaName)
-    {
-        var areaId = _areas.FirstOrDefault(a => a.Name == areaName)?.Id;
-        var areaUsers = areaId.HasValue
-            ? (await Incidents.GetUsersByAreaAsync(areaId.Value)).OrderBy(u => u.FullName).ToList()
-            : new List<SecurityUser>();
-
-        var areaUserNames = areaUsers.Select(u => u.FullName).ToHashSet();
-        var segs = _detail!.TimeSegments.Where(s => s.AreaName == areaName).ToList();
-        var area = _areas.FirstOrDefault(a => a.Name == areaName);
-
-        return new AreaStoryStep(
-            areaName,
-            area?.Color ?? "#3b82f6",
-            area?.Icon ?? "layers-1",
-            Math.Round(segs.Where(s => s.IsActiveWork).Sum(s => s.DurationHours), 1),
-            Math.Round(segs.Where(s => !s.IsActiveWork).Sum(s => s.DurationHours), 1),
-            _detail.Activity.Where(a => areaUserNames.Contains(a.ActorName)).OrderByDescending(a => a.OccurredAt).ToList(),
-            _detail.Comments.Where(c => areaUserNames.Contains(c.AuthorName)).OrderByDescending(c => c.CreatedAt).ToList(),
-            _detail.Transfers.Where(t => t.FromAreaName == areaName || t.ToAreaName == areaName).OrderByDescending(t => t.TransferredAt).ToList(),
-            areaUsers
-        );
-    }
-
-    private double GetActivePercentage()
-    {
-        if (_journeyStep is null) return 0;
-        var total = _journeyStep.ActiveHours + _journeyStep.DeadHours;
-        return total <= 0 ? 0 : Math.Round((_journeyStep.ActiveHours / total) * 100, 0);
-    }
-
-    private double GetWaitingPercentage()
-    {
-        if (_journeyStep is null) return 0;
-        var total = _journeyStep.ActiveHours + _journeyStep.DeadHours;
-        return total <= 0 ? 0 : Math.Round((_journeyStep.DeadHours / total) * 100, 0);
-    }
-
-    private string GetResponsibleSince()
-    {
-        if (_detail is null || _journeyStep is null) return string.Empty;
-
-        var responsible = _journeyStep.Users.FirstOrDefault(u => u.Id == _detail.ResponsibleId);
-        if (responsible is null) return string.Empty;
-
-        var activity = _journeyStep.Activity
-            .Where(a => a.ActorName == responsible.FullName)
-            .OrderBy(a => a.OccurredAt)
-            .FirstOrDefault();
-
-        return activity is null ? string.Empty : activity.OccurredAt.ToRelativeLabel();
-    }
-
-    private string BuildJourneySummary()
-    {
-        if (_journeyStep is null) return string.Empty;
-
-        var isFirst = _journeyStepIndex == 0;
-        var isLast = _journeyStepIndex == _journey.Count - 1;
-
-        var incoming = _journeyStep.Transfers.FirstOrDefault(t => t.ToAreaName == _journeyStep.AreaName);
-        var outgoing = _journeyStep.Transfers.FirstOrDefault(t => t.FromAreaName == _journeyStep.AreaName);
-        var totalHours = _journeyStep.ActiveHours + _journeyStep.DeadHours;
-
-        var opening = isFirst
-            ? "El incidente inició su recorrido en esta área."
-            : incoming is not null
-                ? $"Esta área recibió el incidente desde {incoming.FromAreaName}."
-                : "Esta área participó en el recorrido del incidente.";
-
-        var duration = totalHours > 0
-            ? $" Permaneció {totalHours:0.#} horas en esta etapa, con {_journeyStep.ActiveHours:0.#} horas de trabajo efectivo."
-            : string.Empty;
-
-        var transfer = outgoing is not null
-            ? $" Posteriormente fue transferido hacia {outgoing.ToAreaName}."
-            : isLast ? " Actualmente es el área responsable del seguimiento." : string.Empty;
-
-        var people = _journeyStep.Users.Count switch
-        {
-            0 => string.Empty,
-            1 => " Participó 1 persona de este equipo.",
-            _ => $" Participaron {_journeyStep.Users.Count} personas de este equipo."
-        };
-
-        return $"{opening}{duration}{transfer}{people}";
-    }
-
-    private string GetJourneyStageLabel()
-    {
-        if (_journey.Count == 0) return string.Empty;
-        return _journeyStepIndex switch
-        {
-            0 => "Inicio del recorrido",
-            var x when x == _journey.Count - 1 => "Área actual",
-            _ => "Etapa intermedia"
-        };
-    }
-
-    private async Task OpenJourneyModal(int startIndex = 0)
-    {
-        if (_journey.Count == 0) return;
-        _journeyStepIndex = Math.Clamp(startIndex, 0, _journey.Count - 1);
-        _journeyStep = await BuildAreaStoryAsync(_journey[_journeyStepIndex].AreaName);
-        _showJourneyModal = true;
-        await JSRuntime.InvokeVoidAsync("window.scrollTo", 0, 0);
-        await JSRuntime.InvokeVoidAsync("document.body.classList.add", "modal-open");
-    }
-
-    private async Task GoToJourneyStep(int index)
-    {
-        if (index < 0 || index >= _journey.Count) return;
-        _journeyDirection = index > _journeyStepIndex ? "next" : "prev";
-        _journeyStepIndex = index;
-        _journeyStep = await BuildAreaStoryAsync(_journey[index].AreaName);
-    }
-
-    private async Task CloseJourneyModal()
-    {
-        _showJourneyModal = false;
-        await JSRuntime.InvokeVoidAsync("document.body.classList.remove", "modal-open");
-    }
-
-    private async Task OpenAreaModal(string areaName)
-    {
-        var idx = _journey.FindIndex(j => j.AreaName == areaName);
-        await OpenJourneyModal(idx >= 0 ? idx : 0);
-    }
-
-    private Guid ActorId => _detail?.ResponsibleId ?? _detail?.CreatedByUserId ?? Guid.Empty;
-
-    protected override async Task OnParametersSetAsync()
-    {
-        _areas = (await Incidents.GetAreasAsync()).ToList();
-        await LoadDetail();
-    }
-
-    private async Task LoadDetail()
-    {
-        _detail = await Incidents.GetIncidentDetailAsync(Id);
-        if (_detail is null) return;
-
-        _newStatus = _detail.Status;
-        _currentAreaUsers = (await Incidents.GetUsersByAreaAsync(_detail.CurrentAreaId))
-            .OrderBy(u => u.FullName).ToList();
-
-        _breadcrumb = new List<BreadcrumbItem>
-        {
-            new("Inicio", "/"),
-            new("Incidencias", "/incidencias/listado"),
-            new(_detail.Code, null)
-        };
-
-        BuildJourney();
-        BuildAreaTimeDistribution();
-        _timeSegmentsChart = new List<(string, double, string)>
-        {
-            ("Activo", _detail.TotalActiveHours, "var(--status-resuelta)"),
-            ("Muerto", _detail.TotalDeadHours, "var(--border-strong)")
-        };
-    }
-
-    private void BuildAreaTimeDistribution()
-    {
-        if (_detail is null) return;
-
-        var grouped = _detail.TimeSegments
-            .GroupBy(s => s.AreaName)
-            .Select(g => new { AreaName = g.Key, Hours = g.Sum(s => s.DurationHours) })
-            .Where(g => g.Hours > 0)
-            .OrderByDescending(g => g.Hours)
-            .ToList();
-
-        _areaTimeSegments = new List<(string, double, string)>();
-        _areaTimeLegend = new List<(string, string, string)>();
-
-        foreach (var g in grouped)
-        {
-            var color = _areas.FirstOrDefault(a => a.Name == g.AreaName)?.Color ?? "#334155";
-            _areaTimeSegments.Add((g.AreaName, g.Hours, color));
-            _areaTimeLegend.Add((g.AreaName, $"{g.Hours:0.#}h", color));
+            _areas = (await Incidents.GetAreasAsync()).ToList();
+            _showAreaModal = true;
         }
     }
 
-    private void BuildJourney()
+    private async Task ConfirmArea()
     {
-        _journey = new List<(string, string, string, bool)>();
-        if (_detail is null) return;
-
-        var origin = _areas.FirstOrDefault(a => a.Name == _detail.OriginAreaName);
-        _journey.Add((_detail.OriginAreaName, origin?.Color ?? "#334155", origin?.Icon ?? "layers-3", false));
-
-        foreach (var t in _detail.Transfers.OrderBy(t => t.TransferredAt))
+        if (!_selectedAreaId.HasValue)
         {
-            var area = _areas.FirstOrDefault(a => a.Name == t.ToAreaName);
-            _journey.Add((t.ToAreaName, area?.Color ?? "#334155", area?.Icon ?? "layers-3", false));
+            _areaError = "Tenés que elegir un área para continuar.";
+            return;
         }
 
-        if (_journey.Count > 0)
+        var ok = await Security.AssignAreaAsync(_currentUserId, _selectedAreaId.Value);
+        if (ok)
         {
-            var last = _journey[^1];
-            _journey[^1] = (last.AreaName, last.Color, last.Icon, true);
+            _showAreaModal = false;
         }
-    }
-
-    private async Task OnTransferAreaChanged(ChangeEventArgs e)
-    {
-        _transferAreaId = Guid.TryParse(e.Value?.ToString(), out var areaId) ? areaId : null;
-        _transferUserId = null;
-        _transferUserOptions = _transferAreaId.HasValue
-            ? (await Incidents.GetUsersByAreaAsync(_transferAreaId.Value)).OrderBy(u => u.FullName).ToList()
-            : new();
-    }
-
-    private async Task AssignAction()
-    {
-        if (!_assignUserId.HasValue || _detail is null) return;
-        await Incidents.AssignResponsibleAsync(_detail.Id, _assignUserId.Value, ActorId);
-        _assignUserId = null;
-        await LoadDetail();
-        Toast.Show("Responsable asignado.", ToastVariant.Success, "user-check");
-    }
-
-    private async Task ChangeStatusAction()
-    {
-        if (_detail is null) return;
-        await Incidents.ChangeStatusAsync(_detail.Id, _newStatus, ActorId);
-        await LoadDetail();
-        Toast.Show($"Estado actualizado a {IncidentLabels.Status(_newStatus)}.", ToastVariant.Info, "refresh-cw");
-    }
-
-    private async Task TransferAction()
-    {
-        if (_detail is null || !_transferAreaId.HasValue || !_transferUserId.HasValue) return;
-        await Incidents.TransferIncidentAsync(_detail.Id, _transferAreaId.Value, _transferUserId.Value, _transferReason, ActorId);
-        _transferAreaId = null;
-        _transferUserId = null;
-        _transferReason = string.Empty;
-        _transferUserOptions = new();
-        await LoadDetail();
-        Toast.Show("Incidencia transferida.", ToastVariant.Info, "arrow-right");
-    }
-
-    private async Task CloseIncidentAction()
-    {
-        if (_detail is null) return;
-        await Incidents.CloseIncidentAsync(_detail.Id, ActorId);
-        await LoadDetail();
-        Toast.Show("Incidencia cerrada.", ToastVariant.Success, "check-circle");
-    }
-
-    private async Task ReactivateAction()
-    {
-        if (_detail is null) return;
-        await Incidents.ReactivateIncidentAsync(_detail.Id, _detail.CreatedByUserId);
-        await LoadDetail();
-        Toast.Show("Incidencia reactivada.", ToastVariant.Warning, "rotate-ccw");
-    }
-
-    private async Task AddCommentAction()
-    {
-        if (string.IsNullOrWhiteSpace(_newComment) || _detail is null) return;
-        await Incidents.AddCommentAsync(_detail.Id, ActorId, _newComment);
-        _newComment = string.Empty;
-        await LoadDetail();
-        Toast.Show("Comentario agregado.", ToastVariant.Success, "message-circle");
-    }
-
-    private void RequestCloseConfirmation()
-    {
-        _confirmTitle = "Cerrar incidente";
-        _confirmMessage = $"¿Seguro que deseas cerrar el incidente \"{_detail!.Title}\"? Se marcará como resuelto.";
-        _confirmButtonText = "Sí, cerrar";
-        _confirmButtonClass = "btn--danger";
-        _pendingAction = CloseIncidentAction;
-        _showConfirmModal = true;
-    }
-
-    private void RequestReactivateConfirmation()
-    {
-        _confirmTitle = "Reactivar incidente";
-        _confirmMessage = $"¿Seguro que deseas reactivar el incidente \"{_detail!.Title}\"? Volverá a estar activo.";
-        _confirmButtonText = "Sí, reactivar";
-        _confirmButtonClass = "btn--secondary";
-        _pendingAction = ReactivateAction;
-        _showConfirmModal = true;
-    }
-
-    private async Task ConfirmPendingAction()
-    {
-        if (_pendingAction != null) await _pendingAction.Invoke();
-        CloseConfirmModal();
-    }
-
-    private void CloseConfirmModal()
-    {
-        _showConfirmModal = false;
-        _pendingAction = null;
+        else
+        {
+            _areaError = "No se pudo asignar el área. Intentá de nuevo.";
+        }
     }
 }
+
+
+
+
+
