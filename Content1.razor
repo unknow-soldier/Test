@@ -1,104 +1,23 @@
-Task<bool> AssignAreaAsync(Guid userId, Guid areaId);
-
-
-
-
-
-
-
-public async Task<bool> AssignAreaAsync(Guid userId, Guid areaId)
-{
-    var user = await _db.SecurityUsers.FirstOrDefaultAsync(u => u.Id == userId);
-    if (user == null) return false;
-
-    user.AreaId = areaId;
-    await _db.SaveChangesAsync();
-
-    await LogAuditAsync(userId, user.Username, "ASSIGN_AREA", $"Área asignada: {areaId}");
-    return true;
-}
-
-
-
-
-
-
-@page "/"
-@inject ISecurityService Security
-@inject IIncidentService Incidents
-
-@* ... resto del Home ... *@
-
-@if (_showAreaModal)
-{
-    <div class="modal-overlay">
-        <div class="modal">
-            <div class="modal__header">
-                <h3>Seleccioná tu área</h3>
-            </div>
-            <div class="modal__body">
-                <p>Todavía no tenés un área asignada. Elegí la tuya para continuar usando el módulo de incidencias.</p>
-                <div class="form-group">
-                    <select class="input" @bind="_selectedAreaId">
-                        <option value="">Seleccioná un área</option>
-                        @foreach (var area in _areas)
-                        {
-                            <option value="@area.Id">@area.Name</option>
-                        }
-                    </select>
-                </div>
-                @if (!string.IsNullOrEmpty(_areaError))
-                {
-                    <p class="callout callout--danger">@_areaError</p>
-                }
-            </div>
-            <div class="modal__footer">
-                <button class="btn btn--primary btn--sm" @onclick="ConfirmArea">Confirmar</button>
-            </div>
-        </div>
-    </div>
-}
-
-@code {
-    private bool _showAreaModal;
-    private List<Area> _areas = new();
-    private Guid? _selectedAreaId;
-    private string? _areaError;
-    private Guid _currentUserId;
-
-    protected override async Task OnInitializedAsync()
-    {
-        _currentUserId = await Security.GetCurrentUserIdAsync();
-        var user = await Security.GetUserByIdAsync(_currentUserId);
-
-        if (user != null && user.AreaId is null)
-        {
-            _areas = (await Incidents.GetAreasAsync()).ToList();
-            _showAreaModal = true;
-        }
-    }
-
-    private async Task ConfirmArea()
-    {
-        if (!_selectedAreaId.HasValue)
-        {
-            _areaError = "Tenés que elegir un área para continuar.";
-            return;
-        }
-
-        var ok = await Security.AssignAreaAsync(_currentUserId, _selectedAreaId.Value);
-        if (ok)
-        {
-            _showAreaModal = false;
-        }
-        else
-        {
-            _areaError = "No se pudo asignar el área. Intentá de nuevo.";
-        }
-    }
-}
-
-
-
-
-
+WITH RECURSIVE nums200 (n) AS (
+    SELECT 1 FROM SYSIBM.SYSDUMMY1
+    UNION ALL
+    SELECT n + 1 FROM nums200 WHERE n < 200
+),
+seq20000 (n) AS (
+    SELECT (a.n - 1) * 200 + b.n
+    FROM nums200 a, nums200 b
+    WHERE (a.n - 1) * 200 + b.n <= 20000
+)
+SELECT
+    1700000000 + n AS CPAGPTM,
+    LPAD(CHAR(800000000000 + n), 13, '0') AS CIDENTI,
+    CASE MOD(n,5)
+        WHEN 0 THEN 'CARLOS ANDRES MEJIA LOPEZ'
+        WHEN 1 THEN 'MARIA ELENA SOSA PORTILLO'
+        WHEN 2 THEN 'JOSE LUIS RAMIREZ FLORES'
+        WHEN 3 THEN 'ANA GABRIELA TORRES MARTINEZ'
+        ELSE 'LUIS FERNANDO CASTILLO ORTIZ'
+    END AS CNOMBRE,
+    DEC(5000 + MOD(n * 123, 45000), 11, 2) AS CSDOINI
+FROM seq20000
+FETCH FIRST 20 ROWS ONLY
