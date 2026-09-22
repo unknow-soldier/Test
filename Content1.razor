@@ -1,26 +1,11 @@
-using CorpWiki.Domain.Entities.Incidents;
-using CorpWiki.Domain.Entities.Security;
-using Microsoft.EntityFrameworkCore;
-
-namespace CorpWiki.Infrastructure.Services;
-
-public partial class IncidentService : IIncidentService
-{
-    // Se asume que ya existe en la clase, inyectado por constructor:
-    // private readonly CorpWikiDbContext _context;
-
-    // =====================================================================
-    // Áreas — CRUD
-    // =====================================================================
-
-    public async Task<Area> CreateAreaAsync(string name, string color, string icon = "layers-3")
+public async Task<Area> CreateAreaAsync(string name, string color, string icon = "layers-3")
     {
         if (string.IsNullOrWhiteSpace(name))
             throw new ArgumentException("El nombre del área es obligatorio.", nameof(name));
 
         var nombreNormalizado = name.Trim();
 
-        var yaExiste = await _context.Areas
+        var yaExiste = await _db.Areas
             .AnyAsync(a => a.Name.ToLower() == nombreNormalizado.ToLower());
 
         if (yaExiste)
@@ -34,15 +19,15 @@ public partial class IncidentService : IIncidentService
             Icon = string.IsNullOrWhiteSpace(icon) ? "layers-3" : icon
         };
 
-        _context.Areas.Add(area);
-        await _context.SaveChangesAsync();
+        _db.Areas.Add(area);
+        await _db.SaveChangesAsync();
 
         return area;
     }
 
     public async Task UpdateAreaAsync(Guid areaId, string name, string color, string icon)
     {
-        var area = await _context.Areas.FirstOrDefaultAsync(a => a.Id == areaId);
+        var area = await _db.Areas.FirstOrDefaultAsync(a => a.Id == areaId);
         if (area is null)
             throw new KeyNotFoundException($"No se encontró el área con id '{areaId}'.");
 
@@ -51,7 +36,7 @@ public partial class IncidentService : IIncidentService
 
         var nombreNormalizado = name.Trim();
 
-        var nombreEnUso = await _context.Areas
+        var nombreEnUso = await _db.Areas
             .AnyAsync(a => a.Id != areaId && a.Name.ToLower() == nombreNormalizado.ToLower());
 
         if (nombreEnUso)
@@ -61,28 +46,28 @@ public partial class IncidentService : IIncidentService
         area.Color = string.IsNullOrWhiteSpace(color) ? area.Color : color;
         area.Icon = string.IsNullOrWhiteSpace(icon) ? area.Icon : icon;
 
-        await _context.SaveChangesAsync();
+        await _db.SaveChangesAsync();
     }
 
     public async Task DeleteAreaAsync(Guid areaId)
     {
-        var area = await _context.Areas.FirstOrDefaultAsync(a => a.Id == areaId);
+        var area = await _db.Areas.FirstOrDefaultAsync(a => a.Id == areaId);
         if (area is null)
             throw new KeyNotFoundException($"No se encontró el área con id '{areaId}'.");
 
-        var tieneUsuarios = await _context.Users.AnyAsync(u => u.AreaId == areaId);
+        var tieneUsuarios = await _db.Users.AnyAsync(u => u.AreaId == areaId);
         if (tieneUsuarios)
             throw new InvalidOperationException(
                 "No se puede eliminar el área porque tiene usuarios asignados. Reasigna o quita a los participantes primero.");
 
-        var tieneIncidenciasActivas = await _context.Incidents
+        var tieneIncidenciasActivas = await _db.Incidents
             .AnyAsync(i => i.AreaId == areaId && i.Status != IncidentStatus.Closed);
         if (tieneIncidenciasActivas)
             throw new InvalidOperationException(
                 "No se puede eliminar el área porque tiene incidencias activas asociadas.");
 
-        _context.Areas.Remove(area);
-        await _context.SaveChangesAsync();
+        _db.Areas.Remove(area);
+        await _db.SaveChangesAsync();
     }
 
     // =====================================================================
@@ -91,546 +76,26 @@ public partial class IncidentService : IIncidentService
 
     public async Task AssignUserToAreaAsync(Guid userId, Guid areaId)
     {
-        var usuario = await _context.Users.FirstOrDefaultAsync(u => u.Id == userId);
+        var usuario = await _db.Users.FirstOrDefaultAsync(u => u.Id == userId);
         if (usuario is null)
             throw new KeyNotFoundException($"No se encontró el usuario con id '{userId}'.");
 
-        var areaExiste = await _context.Areas.AnyAsync(a => a.Id == areaId);
+        var areaExiste = await _db.Areas.AnyAsync(a => a.Id == areaId);
         if (!areaExiste)
             throw new KeyNotFoundException($"No se encontró el área con id '{areaId}'.");
 
-        // Si el usuario ya pertenecía a otra área, esto lo mueve (no lo duplica).
         usuario.AreaId = areaId;
 
-        await _context.SaveChangesAsync();
+        await _db.SaveChangesAsync();
     }
 
     public async Task RemoveUserFromAreaAsync(Guid userId)
     {
-        var usuario = await _context.Users.FirstOrDefaultAsync(u => u.Id == userId);
+        var usuario = await _db.Users.FirstOrDefaultAsync(u => u.Id == userId);
         if (usuario is null)
             throw new KeyNotFoundException($"No se encontró el usuario con id '{userId}'.");
 
         usuario.AreaId = null;
 
-        await _context.SaveChangesAsync();
+        await _db.SaveChangesAsync();
     }
-}
-
-
-
-
-
-// Agregar estos miembros a IIncidentService (y su implementación EF Core).
-// La relación Área-Usuario es 1:N vía SecurityUser.AreaId, así que
-// "asignar/remover participante de un área" es simplemente escribir/limpiar ese campo.
-
-public interface IIncidentService
-{
-    // ... miembros existentes ...
-
-    // Áreas — CRUD
-    Task<Area> CreateAreaAsync(string name, string color, string icon = "layers-3");
-    Task UpdateAreaAsync(Guid areaId, string name, string color, string icon);
-    Task DeleteAreaAsync(Guid areaId); // considerar bloquear si tiene usuarios o incidencias activas
-
-    // Áreas — participantes
-    Task AssignUserToAreaAsync(Guid userId, Guid areaId);
-    Task RemoveUserFromAreaAsync(Guid userId);
-}
-
-/* Notas de implementación sugeridas:
-   - CreateAreaAsync: validar nombre único (case-insensitive) antes de insertar.
-   - AssignUserToAreaAsync: si el usuario ya pertenece a otra área, esto la reemplaza
-     (mueve al usuario, no lo duplica). Si prefieres impedir mover usuarios con
-     incidencias activas asignadas, valida eso aquí.
-   - DeleteAreaAsync: decide la política — ¿reasignar usuarios a "Sin área" (AreaId = null)
-     o bloquear el borrado si Area.Id sigue en uso? Documentado como TODO abajo.
-*/
-
-
-
-
-
-/* =========================================================================
-   Area Manager Modal — reutiliza tokens de base.css / components.css / modals.css
-   ========================================================================= */
-
-.area-manager {
-    display: grid;
-    grid-template-columns: 220px 1fr;
-    gap: var(--space-5);
-    min-height: 360px;
-}
-
-.area-manager__list {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    border-right: 1px solid var(--border-subtle);
-    padding-right: var(--space-4);
-}
-.area-manager__list-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: var(--space-2);
-}
-
-.area-manager__row {
-    cursor: pointer;
-    border-radius: var(--radius-md);
-    padding: var(--space-2);
-}
-.area-manager__row:hover { background: var(--bg-hover); }
-.area-manager__row--active { background: var(--bg-active); }
-.area-manager__row--active .category-row__name {
-    color: var(--brand-500);
-    font-weight: 700;
-}
-
-.area-manager__detail-header {
-    display: flex;
-    align-items: center;
-    gap: var(--space-3);
-}
-.area-manager__detail-header h4 { margin: 0; }
-
-.area-manager__candidates {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-2);
-    max-height: 160px;
-    overflow-y: auto;
-    padding-top: 2px;
-}
-
-.area-new-form {
-    padding: var(--space-3);
-    background: var(--bg-surface-2);
-    border-radius: var(--radius-md);
-    margin-bottom: var(--space-3);
-}
-
-@media (max-width: 640px) {
-    .area-manager { grid-template-columns: 1fr; }
-    .area-manager__list {
-        border-right: none;
-        border-bottom: 1px solid var(--border-subtle);
-        padding-right: 0;
-        padding-bottom: var(--space-3);
-    }
-}
-
-
-
-
-
-
-
-
-@* =========================================================================
-   AreaManagerModal
-   Módulo por modal para el listado de Incidencias: ver áreas, ver los
-   usuarios de cada área, crear una nueva área, y asignar / remover
-   participantes (SecurityUser.AreaId) de un área.
-
-   Uso desde Incidencias.razor:
-
-     <AreaManagerModal @bind-IsOpen="_showAreaManager" OnChanged="ReloadAreasAndUsers" />
-
-     private bool _showAreaManager;
-     private async Task ReloadAreasAndUsers()
-     {
-         _areas = await Incidents.GetAreasAsync();
-         _users = await Incidents.GetUsersAsync();
-     }
-
-   Y un botón en la hero de la página:
-     <button class="btn btn--secondary" @onclick="() => _showAreaManager = true">
-         <Icon Name="layers-3" /> Gestionar áreas
-     </button>
-   ========================================================================= *@
-
-@using CorpWiki.Domain.Entities.Incidents
-@using CorpWiki.Domain.Entities.Security
-@using CorpWiki.Application.Interfaces
-@using CorpWiki.Application.Helpers
-@inject IIncidentService Incidents
-
-<Modal IsOpen="@IsOpen" IsOpenChanged="HandleIsOpenChanged" Title="Áreas y participantes" SizeClass="modal--lg">
-    <div class="area-manager">
-        <div class="area-manager__list">
-            <div class="area-manager__list-header">
-                <span class="form-label">Áreas</span>
-                <button class="icon-btn icon-btn--ghost" @onclick="ToggleNewAreaForm" title="Nueva área">
-                    <Icon Name="plus" />
-                </button>
-            </div>
-
-            @if (_showNewAreaForm)
-            {
-                <div class="area-new-form">
-                    <div class="form-group">
-                        <input class="input" placeholder="Nombre del área"
-                               @bind="_newAreaName" @bind:event="oninput" />
-                    </div>
-
-                    <div class="form-group">
-                        <label class="form-label">Color</label>
-                        <div class="color-swatch-row">
-                            @foreach (var c in _colorPalette)
-                            {
-                                <div class="color-swatch @(c == _newAreaColor ? "color-swatch--active" : "")"
-                                     style="background:@c;"
-                                     @onclick="() => _newAreaColor = c"></div>
-                            }
-                        </div>
-                    </div>
-
-                    @if (!string.IsNullOrEmpty(_newAreaError))
-                    {
-                        <p class="form-hint form-hint--error">@_newAreaError</p>
-                    }
-
-                    <div class="form-actions">
-                        <button class="btn btn--secondary btn--sm" @onclick="ToggleNewAreaForm">
-                            Cancelar
-                        </button>
-
-                        <button class="btn btn--primary btn--sm"
-                                @onclick="CreateAreaAsync"
-                                disabled="@_creatingArea">
-                            @(_creatingArea ? "Creando..." : "Crear área")
-                        </button>
-                    </div>
-                </div>
-            }
-
-            @if (_areas.Count == 0 && !_showNewAreaForm)
-            {
-                <p class="section-header__subtitle">Aún no hay áreas creadas.</p>
-            }
-            else
-            {
-                @foreach (var area in _areas)
-                {
-                    <div class="category-row area-manager__row @(_selectedArea?.Id == area.Id ? "area-manager__row--active" : "")"
-                         @onclick="() => SelectAreaAsync(area)">
-
-                        <div class="category-row__icon"
-                             style="background:@ColorUtils.ToRgba(area.Color, 0.14); color:@area.Color;">
-                            <Icon Name="@area.Icon" />
-                        </div>
-
-                        <span class="category-row__name">@area.Name</span>
-
-                        <span class="badge badge--sm">
-                            @(_userCountByArea.TryGetValue(area.Id, out var c) ? c : 0)
-                        </span>
-                    </div>
-                }
-            }
-        </div>
-
-        <div class="area-manager__detail">
-            @if (_selectedArea is null)
-            {
-                <div class="empty-state empty-state--inline">
-                    <Icon Name="layers-3" />
-                    <p>Selecciona un área para ver y gestionar sus participantes.</p>
-                </div>
-            }
-            else
-            {
-                <div class="area-manager__detail-header">
-                    <div class="category-row__icon"
-                         style="background:@ColorUtils.ToRgba(_selectedArea.Color, 0.14); color:@_selectedArea.Color;">
-                        <Icon Name="@_selectedArea.Icon" />
-                    </div>
-
-                    <h4>@_selectedArea.Name</h4>
-                </div>
-
-                <p class="form-label" style="margin-top: var(--space-4);">
-                    Participantes (@_areaUsers.Count)
-                </p>
-
-                @if (_loadingArea)
-                {
-                    <div class="skeleton"
-                         style="height: 60px; margin-bottom: var(--space-2);">
-                    </div>
-                }
-                else if (_areaUsers.Count == 0)
-                {
-                    <p class="section-header__subtitle">
-                        Sin usuarios asignados a esta área.
-                    </p>
-                }
-                else
-                {
-                    @foreach (var user in _areaUsers)
-                    {
-                        <div class="activity-row">
-                            <UserAvatar FullName="@user.FullName"
-                                        ColorFrom="@user.AvatarColorFrom"
-                                        ColorTo="@user.AvatarColorTo"
-                                        Size="UserAvatar.AvatarSize.Sm" />
-
-                            <div style="flex:1; min-width:0;">
-                                <p class="activity-row__text">
-                                    <strong>@user.FullName</strong>
-                                </p>
-
-                                <p class="activity-row__time">
-                                    @user.Position
-                                </p>
-                            </div>
-
-                            <div class="row-actions">
-                                <button class="icon-btn icon-btn--ghost icon-btn--danger"
-                                        title="Quitar del área"
-                                        @onclick="() => RemoveFromAreaAsync(user)">
-                                    <Icon Name="x-circle" />
-                                </button>
-                            </div>
-                        </div>
-                    }
-                }
-
-                <p class="form-label" style="margin-top: var(--space-5);">
-                    Agregar participante
-                </p>
-
-                <div class="form-group">
-                    <input class="input"
-                           placeholder="Buscar usuario..."
-                           @bind="_userSearch"
-                           @bind:event="oninput" />
-                </div>
-
-                <div class="area-manager__candidates">
-                    @{
-                        var candidates = FilteredAvailableUsers().ToList();
-                    }
-
-                    @if (candidates.Count == 0)
-                    {
-                        <p class="section-header__subtitle">
-                            No hay usuarios disponibles para agregar.
-                        </p>
-                    }
-                    else
-                    {
-                        @foreach (var user in candidates)
-                        {
-                            <div class="chip"
-                                 @onclick="() => AssignToAreaAsync(user)">
-                                <Icon Name="plus" />
-                                @user.FullName
-                            </div>
-                        }
-                    }
-                </div>
-            }
-        </div>
-    </div>
-</Modal>
-
-@code {
-    [Parameter] public bool IsOpen { get; set; }
-    [Parameter] public EventCallback<bool> IsOpenChanged { get; set; }
-    [Parameter] public EventCallback OnChanged { get; set; }
-
-    private List<Area> _areas = new();
-    private List<SecurityUser> _allUsers = new();
-    private Dictionary<Guid, int> _userCountByArea = new();
-
-    private Area? _selectedArea;
-    private List<SecurityUser> _areaUsers = new();
-    private bool _loadingArea;
-    private string _userSearch = string.Empty;
-
-    private bool _showNewAreaForm;
-    private bool _creatingArea;
-    private string _newAreaName = string.Empty;
-    private string _newAreaColor = "#0ea5e9";
-    private string? _newAreaError;
-
-    private bool _loaded;
-
-    private readonly string[] _colorPalette =
-    {
-        "#0ea5e9",
-        "#10b981",
-        "#f59e0b",
-        "#8b5cf6",
-        "#ef4444",
-        "#334155",
-        "#DA1F3D",
-        "#0A1F3D"
-    };
-
-    protected override async Task OnParametersSetAsync()
-    {
-        if (IsOpen && !_loaded)
-        {
-            await LoadAsync();
-            _loaded = true;
-        }
-        else if (!IsOpen)
-        {
-            // Reset al cerrar para que la próxima apertura recargue datos frescos
-            _loaded = false;
-            _selectedArea = null;
-            _areaUsers.Clear();
-            _showNewAreaForm = false;
-        }
-    }
-
-    private async Task HandleIsOpenChanged(bool value)
-    {
-        IsOpen = value;
-        await IsOpenChanged.InvokeAsync(value);
-    }
-
-    private async Task LoadAsync()
-    {
-        _areas = (await Incidents.GetAreasAsync()).ToList();
-        _allUsers = (await Incidents.GetUsersAsync()).ToList();
-
-        RecomputeCounts();
-    }
-
-    private void RecomputeCounts()
-    {
-        _userCountByArea = _allUsers
-            .Where(u => u.AreaId.HasValue)
-            .GroupBy(u => u.AreaId!.Value)
-            .ToDictionary(g => g.Key, g => g.Count());
-    }
-
-    private async Task SelectAreaAsync(Area area)
-    {
-        _selectedArea = area;
-        _userSearch = string.Empty;
-        _loadingArea = true;
-
-        _areaUsers = (await Incidents.GetUsersByAreaAsync(area.Id)).ToList();
-
-        _loadingArea = false;
-    }
-
-    private IEnumerable<SecurityUser> FilteredAvailableUsers()
-    {
-        if (_selectedArea is null)
-            yield break;
-
-        var query = _allUsers
-            .Where(u => u.IsActive && u.AreaId != _selectedArea.Id);
-
-        if (!string.IsNullOrWhiteSpace(_userSearch))
-        {
-            query = query.Where(u =>
-                u.FullName.Contains(
-                    _userSearch,
-                    StringComparison.OrdinalIgnoreCase));
-        }
-
-        foreach (var u in query.OrderBy(u => u.FullName))
-        {
-            yield return u;
-        }
-    }
-
-    private void ToggleNewAreaForm()
-    {
-        _showNewAreaForm = !_showNewAreaForm;
-        _newAreaName = string.Empty;
-        _newAreaError = null;
-    }
-
-    private async Task CreateAreaAsync()
-    {
-        if (string.IsNullOrWhiteSpace(_newAreaName))
-        {
-            _newAreaError = "El nombre del área es obligatorio.";
-            return;
-        }
-
-        if (_areas.Any(a =>
-            string.Equals(
-                a.Name,
-                _newAreaName.Trim(),
-                StringComparison.OrdinalIgnoreCase)))
-        {
-            _newAreaError = "Ya existe un área con ese nombre.";
-            return;
-        }
-
-        _creatingArea = true;
-        _newAreaError = null;
-
-        try
-        {
-            var created = await Incidents.CreateAreaAsync(
-                _newAreaName.Trim(),
-                _newAreaColor,
-                "layers-3");
-
-            _areas.Add(created);
-            _showNewAreaForm = false;
-            _newAreaName = string.Empty;
-
-            await OnChanged.InvokeAsync();
-        }
-        catch (Exception ex)
-        {
-            _newAreaError = "No se pudo crear el área: " + ex.Message;
-        }
-        finally
-        {
-            _creatingArea = false;
-        }
-    }
-
-    private async Task AssignToAreaAsync(SecurityUser user)
-    {
-        if (_selectedArea is null)
-            return;
-
-        var previousAreaId = user.AreaId;
-
-        await Incidents.AssignUserToAreaAsync(
-            user.Id,
-            _selectedArea.Id);
-
-        user.AreaId = _selectedArea.Id;
-
-        _areaUsers.Add(user);
-        _areaUsers = _areaUsers
-            .OrderBy(u => u.FullName)
-            .ToList();
-
-        RecomputeCounts();
-
-        await OnChanged.InvokeAsync();
-    }
-
-    private async Task RemoveFromAreaAsync(SecurityUser user)
-    {
-        if (_selectedArea is null)
-            return;
-
-        await Incidents.RemoveUserFromAreaAsync(user.Id);
-
-        user.AreaId = null;
-
-        _areaUsers.RemoveAll(u => u.Id == user.Id);
-
-        RecomputeCounts();
-
-        await OnChanged.InvokeAsync();
-    }
-}
