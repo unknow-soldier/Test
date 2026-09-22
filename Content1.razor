@@ -1,4 +1,31 @@
-public async Task<Area> CreateAreaAsync(string name, string color, string icon = "layers-3")
+using CorpWiki.Domain.Entities.Incidents;
+using CorpWiki.Domain.Entities.Security;
+using Microsoft.EntityFrameworkCore;
+
+namespace CorpWiki.Infrastructure.Services;
+
+public partial class IncidentService : IIncidentService
+{
+    // Ya existe en tu clase:
+    // private readonly DaviWikiDbContext _db;
+
+    // Nuevo: inyectar ISecurityService para reutilizar AssignAreaAsync
+    // (ya hace user.AreaId = areaId + LogAuditAsync "ASSIGN_AREA").
+    // Si tu constructor actual es:
+    //   public IncidentService(DaviWikiDbContext db) { _db = db; }
+    // cámbialo a:
+    //   public IncidentService(DaviWikiDbContext db, ISecurityService securityService)
+    //   {
+    //       _db = db;
+    //       _securityService = securityService;
+    //   }
+    private readonly ISecurityService _securityService;
+
+    // =====================================================================
+    // Áreas — CRUD
+    // =====================================================================
+
+    public async Task<Area> CreateAreaAsync(string name, string color, string icon = "layers-3")
     {
         if (string.IsNullOrWhiteSpace(name))
             throw new ArgumentException("El nombre del área es obligatorio.", nameof(name));
@@ -55,13 +82,17 @@ public async Task<Area> CreateAreaAsync(string name, string color, string icon =
         if (area is null)
             throw new KeyNotFoundException($"No se encontró el área con id '{areaId}'.");
 
-        var tieneUsuarios = await _db.Users.AnyAsync(u => u.AreaId == areaId);
+        var tieneUsuarios = await _db.SecurityUsers.AnyAsync(u => u.AreaId == areaId);
         if (tieneUsuarios)
             throw new InvalidOperationException(
                 "No se puede eliminar el área porque tiene usuarios asignados. Reasigna o quita a los participantes primero.");
 
+        // Asumo que el campo se llama CurrentAreaId (por el comentario en Area.cs:
+        // "cada Incident tiene un área de origen y un área actual").
+        // Si en tu clase Incident el campo tiene otro nombre, solo cámbialo aquí.
         var tieneIncidenciasActivas = await _db.Incidents
-            .AnyAsync(i => i.AreaId == areaId && i.Status != IncidentStatus.Closed);
+            .AnyAsync(i => i.CurrentAreaId == areaId && i.Status != IncidentStatus.Cerrada);
+
         if (tieneIncidenciasActivas)
             throw new InvalidOperationException(
                 "No se puede eliminar el área porque tiene incidencias activas asociadas.");
@@ -71,31 +102,33 @@ public async Task<Area> CreateAreaAsync(string name, string color, string icon =
     }
 
     // =====================================================================
-    // Áreas — participantes (relación 1:N vía SecurityUser.AreaId)
+    // Áreas — participantes
+    // Delega en ISecurityService.AssignAreaAsync para no duplicar la
+    // lógica de auditoría (LogAuditAsync "ASSIGN_AREA") que ya existe ahí.
     // =====================================================================
 
     public async Task AssignUserToAreaAsync(Guid userId, Guid areaId)
     {
-        var usuario = await _db.Users.FirstOrDefaultAsync(u => u.Id == userId);
-        if (usuario is null)
-            throw new KeyNotFoundException($"No se encontró el usuario con id '{userId}'.");
-
         var areaExiste = await _db.Areas.AnyAsync(a => a.Id == areaId);
         if (!areaExiste)
             throw new KeyNotFoundException($"No se encontró el área con id '{areaId}'.");
 
-        usuario.AreaId = areaId;
-
-        await _db.SaveChangesAsync();
+        var ok = await _securityService.AssignAreaAsync(userId, areaId);
+        if (!ok)
+            throw new KeyNotFoundException($"No se encontró el usuario con id '{userId}'.");
     }
 
     public async Task RemoveUserFromAreaAsync(Guid userId)
     {
-        var usuario = await _db.Users.FirstOrDefaultAsync(u => u.Id == userId);
+        var usuario = await _db.SecurityUsers.FirstOrDefaultAsync(u => u.Id == userId);
         if (usuario is null)
             throw new KeyNotFoundException($"No se encontró el usuario con id '{userId}'.");
 
         usuario.AreaId = null;
-
         await _db.SaveChangesAsync();
+
+        // Opcional: si quieres que quitar del área también quede auditado,
+        // dime y le agregamos un método RemoveAreaAsync espejo en ISecurityService
+        // con LogAuditAsync(userId, usuario.Username, "REMOVE_AREA", ...).
     }
+}
