@@ -1,3 +1,21 @@
-UPDATE [Daviwiki].[dbo].[authors]
-SET [SecurityUserId] = '37EC43F4-DESA-486C-B747-129029C201CE' -- O 'DCA55D20-276E-4373-ACB1-16D9CD8012F2' según cuál sea el ID activo
-WHERE [FullName] LIKE '%Mario Sebastian%'
+public async Task LinkSecurityUserAsync(Guid authorId, Guid securityUserId)
+{
+    await using var db = await _dbFactory.CreateDbContextAsync();
+
+    // 1. Buscar si el autor existe
+    var author = await db.Authors.FirstOrDefaultAsync(a => a.Id == authorId);
+    if (author is null) return;
+
+    // 2. Verificar si el SecurityUser realmente existe en la BD
+    var securityUserExists = await db.SecurityUsers.AnyAsync(s => s.Id == securityUserId);
+    if (!securityUserExists)
+    {
+        // Si el usuario fue eliminado, no se puede hacer el vínculo.
+        // Aquí puedes lanzar una excepción o simplemente retornar.
+        return; 
+    }
+
+    // 3. Asignar y guardar
+    author.SecurityUserId = securityUserId;
+    await db.SaveChangesAsync();
+}
