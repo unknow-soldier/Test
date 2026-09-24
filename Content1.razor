@@ -1,61 +1,51 @@
-// =========================================================================
-// 4. Status: int -> nvarchar(30), remapeando 8 valores viejos a 4 nuevos.
-// =========================================================================
-migrationBuilder.Sql(@"
-    IF EXISTS (
-        SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_NAME = 'Incidents' AND COLUMN_NAME = 'Status' AND DATA_TYPE = 'int'
-    )
-    BEGIN
-        ALTER TABLE dbo.Incidents ADD StatusText nvarchar(30) NULL;
+@using CorpWiki.Application.DTOs.Incidents
+@using CorpWiki.Application.Helpers
 
-        EXEC('
-            UPDATE Incidents
-            SET StatusText = CASE Status
-                WHEN 0 THEN ''EnDesarrollo''
-                WHEN 1 THEN ''EnDesarrollo''
-                WHEN 2 THEN ''EnDesarrollo''
-                WHEN 3 THEN ''EnDesarrollo''
-                WHEN 4 THEN ''EnDesarrollo''
-                WHEN 5 THEN ''Resuelta''
-                WHEN 6 THEN ''Cerrada''
-                WHEN 7 THEN ''Reactivada''
-                ELSE ''EnDesarrollo''
-            END;
-        ');
+<a class="incident-row" href="@($"/incidencias/{Item.Id}")">
+    <div class="incident-row__main">
+        <span class="incident-row__code">@Item.Code</span>
+        <h4 class="incident-row__title">@Item.Title</h4>
+        <div class="incident-row__badges">
+            <IncidentStatusBadge Status="Item.Status" />
+            <IncidentPriorityBadge Priority="Item.Priority" />
+            <AreaBadge Name="@Item.AreaName" Color="@Item.AreaColor" ShowIcon="false" Small="true" />
+        </div>
+    </div>
 
-        ALTER TABLE dbo.Incidents DROP COLUMN Status;
-        EXEC sp_rename 'dbo.Incidents.StatusText', 'Status', 'COLUMN';
-        ALTER TABLE dbo.Incidents ALTER COLUMN Status nvarchar(30) NOT NULL;
-    END
-");
+    <div class="incident-row__meta">
+        <div class="incident-row__responsibles">
+            @if (Item.Responsibles.Count == 0)
+            {
+                <span class="incident-row__no-responsible">Sin responsables</span>
+            }
+            else
+            {
+                @foreach (var r in Item.Responsibles.Take(3))
+                {
+                    <UserAvatar FullName="@r.FullName" Initials="@r.Initials"
+                                ColorFrom="@r.AvatarColorFrom" ColorTo="@r.AvatarColorTo"
+                                Size="UserAvatar.AvatarSize.Sm" />
+                }
+                @if (Item.Responsibles.Count > 3)
+                {
+                    <span class="incident-row__more">+@(Item.Responsibles.Count - 3)</span>
+                }
+            }
+        </div>
+
+        <div class="incident-row__stats">
+            <span><Icon Name="message-circle" /> @Item.CommentsCount</span>
+            <span><Icon Name="arrow-right" /> @Item.TransfersCount</span>
+            <span><Icon Name="clock" /> @Item.UpdatedAt.ToRelativeLabel()</span>
+        </div>
+    </div>
+</a>
+
+@code {
+    [Parameter, EditorRequired] public IncidentSummaryDto Item { get; set; } = null!;
+}
 
 
 
-// =========================================================================
-// 5. Priority: int -> nvarchar(20). Mismo criterio defensivo.
-// =========================================================================
-migrationBuilder.Sql(@"
-    IF EXISTS (
-        SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_NAME = 'Incidents' AND COLUMN_NAME = 'Priority' AND DATA_TYPE = 'int'
-    )
-    BEGIN
-        ALTER TABLE dbo.Incidents ADD PriorityText nvarchar(20) NULL;
 
-        EXEC('
-            UPDATE Incidents
-            SET PriorityText = CASE Priority
-                WHEN 0 THEN ''Baja''
-                WHEN 1 THEN ''Media''
-                WHEN 2 THEN ''Alta''
-                WHEN 3 THEN ''Critica''
-                ELSE ''Media''
-            END;
-        ');
 
-        ALTER TABLE dbo.Incidents DROP COLUMN Priority;
-        EXEC sp_rename 'dbo.Incidents.PriorityText', 'Priority', 'COLUMN';
-        ALTER TABLE dbo.Incidents ALTER COLUMN Priority nvarchar(20) NOT NULL;
-    END
-");
