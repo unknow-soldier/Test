@@ -1,11 +1,136 @@
-[22/9, 12:42 p. m.] Mario Dav: INSERT INTO bcah96dta.LNPLAN02
-    (CPAGPTM, CIDENTI, CNOMBRE, CEMAL, CCELULAR, CTASA, CTIPO, CSDOINI, CCUOTA, CPLAZO)
-VALUES
-    (1600000001, '0801199512345', 'MARIA ELENA SOSA PORTILLO', 'mariasosa.hn@correo.com',
-     98765432, 13.500, 'PRESTAMO PERSONAL', 15000.00, 1400.00, 12);
-[22/9, 12:42 p. m.] Mario Dav: INSERT INTO bcah96dta.LNPLAN01
-    (PPAGPTM, PPAGNCUO, PPAGFHA, PPASDOINI, PAGOCAPIT, PAGOINTER, PPAGPROG, PPACAREXT, PPACUOTOT, PAGSDOFIN, PAGINTACU, PAGCARGO)
-VALUES
-    (1600000001, 1, 20260201, 15000.00, 1231.25, 168.75, 1400.00, 25.00, 1425.00, 13768.75, 168.75, 0.00),
-    (1600000001, 2, 20260301, 13768.75, 1245.10, 154.90, 1400.00, 25.00, 1425.00, 12523.65, 323.65, 0.00),
-    (1600000001, 3, 20260401, 12523.65, 1259.11, 140.89, 1400.00, 25.00, 1425.00, 11264.54, 464.54, 0.00);
+// Parametros de compilacion
+ctl-opt dftactgrp(*no) actgrp(*new);
+
+// Parámetros de entrada: cuenta y nombre del cliente
+Dcl-Pi CVBMT946 EXTPGM;
+  PrNumCta ZONED(10:0);
+  PrNomCli Char(40);
+End-Pi;
+
+/copy bcah96/qrpglesrc,copyright;
+
+// ==== Datos de prueba en duro (comentado) ====
+// Para probar la pantalla sin invocarla desde un menú, comenta el
+// bloque Dcl-Pi/End-Pi de arriba y descomenta estas 2 líneas:
+// dcl-s PrNumCta ZONED(10:0) inz(1234567890);
+// dcl-s PrNomCli Char(40)    inz('CLIENTE DE PRUEBA');
+
+// Declaración de archivo de pantalla
+dcl-f CVBMT946D workstn sfile(SFDATOS:RRN) indds(VndIndic);
+
+//------------------------------------------------------------
+// Constantes y variables de control
+//------------------------------------------------------------
+dcl-c MAX_FILAS     const(1000);        // = SFLSIZ del DSPF
+dcl-s RRN           packed(4:0);
+dcl-s Contador      int(10);
+dcl-s TamanoPagina  int(10) inz(1000);  // = SFLSIZ del DSPF
+
+// Indicadores del DDS
+dcl-ds VndIndic qualified;
+  SflSalida ind pos(3);   // CA03 = F3/Salir
+  SflDsp    ind pos(81);
+  SflDspCtl ind pos(80);
+  SflClr    ind pos(82);
+  SflEnd    ind pos(36);
+end-ds;
+
+// Campos de pantalla (mismos nombres que en el DDS)
+// OJO: asumo que tu campo de búsqueda se llama BUSDTA (72A) en
+// SFCONTROL, igual que en MAC10SQL. Si le pusiste otro nombre,
+// solo reemplázalo aquí y en el cursor de abajo.
+dcl-s DATA    char(72);
+dcl-s NUMCTA  zoned(10:0);
+dcl-s NOMCLI  char(40);
+dcl-s BUSDTA  char(72);
+
+//------------------------------------------------------------
+// Programa principal
+//------------------------------------------------------------
+exec sql set option commit = *none;
+
+NUMCTA = PrNumCta;
+NOMCLI = PrNomCli;
+
+PrLimpia();
+PrCarga();
+PrDespliega();
+
+*Inlr = *on;
+
+//------------------------------------------------------------
+// Limpia el subfile
+//------------------------------------------------------------
+dcl-proc PrLimpia;
+  VndIndic.SflClr = *on;
+  Write SFCONTROL;
+  VndIndic.SflClr = *off;
+  Clear RRN;
+End-Proc;
+
+//------------------------------------------------------------
+// Carga el subfile con las líneas de CVMT944 que coincidan con
+// el filtro de búsqueda (BUSDTA). El archivo no tiene columna de
+// cuenta/llave: NUMCTA/NOMCLI que llegan por parámetro son solo
+// contexto informativo en cabecera, no filtran la consulta.
+//------------------------------------------------------------
+dcl-proc PrCarga;
+  Clear RRN;
+  Contador = 0;
+
+  exec sql
+    Declare c1 Cursor For
+      Select DATA
+      From   COVENDATV4/CVMT944
+      Where  (:BUSDTA = '' Or UPPER(DATA) Like '%' ||
+              UPPER(Trim(:BUSDTA)) || '%')
+      Fetch First :TamanoPagina Rows Only;
+
+  exec sql Open c1;
+
+  If sqlcode < 0;
+    VndIndic.SflEnd = *on;
+    Return;
+  EndIf;
+
+  Dow Contador < TamanoPagina;
+    exec sql
+      Fetch c1 Into :DATA;
+
+    If sqlcode = 100;
+      VndIndic.SflEnd = *on;
+      Leave;
+    ElseIf sqlcode < 0;
+      Leave;
+    EndIf;
+
+    RRN += 1;
+    Contador += 1;
+    Write SFDATOS;
+  EndDo;
+
+  exec sql Close c1;
+
+  If RRN > 0;
+    VndIndic.SflDsp = *on;
+  EndIf;
+  VndIndic.SflDspCtl = *on;
+End-Proc;
+
+//------------------------------------------------------------
+// Ciclo principal, interacción con SF. Vuelve a cargar el subfile
+// cada vez que el usuario cambia el filtro de búsqueda y presiona
+// Intro, hasta que se pulsa F3.
+//------------------------------------------------------------
+dcl-proc PrDespliega;
+  Dow VndIndic.SflSalida = *off;
+    Exfmt SFCONTROL;
+
+    If VndIndic.SflSalida = *on;
+      Leave;
+    EndIf;
+
+    PrLimpia();
+    PrCarga();
+  EndDo;
+End-Proc;
