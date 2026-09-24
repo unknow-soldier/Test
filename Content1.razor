@@ -1,325 +1,1150 @@
-@using CorpWiki.Application.DTOs.Incidents
-@using CorpWiki.Application.Helpers
+@page "/incidencias/listado"
+@rendermode InteractiveServer
+@inject IIncidentService Incidents
+@using CorpWiki.Web.Components.Shared.Incidents
+<PageTitle>DaviWiki - Listado de Incidencias</PageTitle>
 
-<a class="incident-row" href="@($"/incidencias/{Item.Id}")">
-    <div class="incident-row__main">
-        <span class="incident-row__code">@Item.Code</span>
-        <h4 class="incident-row__title">@Item.Title</h4>
-        <div class="incident-row__badges">
-            <IncidentStatusBadge Status="Item.Status" />
-            <IncidentPriorityBadge Priority="Item.Priority" />
-            <AreaBadge Name="@Item.AreaName" Color="@Item.AreaColor" ShowIcon="false" Small="true" />
-        </div>
+<div class="page-header">
+    <div>
+        <h1>Listado de Incidencias</h1>
+        <p>@_filtered.Count() de @_all.Count incidencias.</p>
+    </div>
+    <div class="page-header__actions">
+        <a class="btn btn--primary" href="/incidencias/nueva"><Icon Name="plus" /> Nueva incidencia</a>
+    </div>
+</div>
+
+<div class="card widget" style="margin-bottom: var(--space-5);">
+    <h4 class="widget__title" style="margin-bottom: var(--space-3);"><Icon Name="pie-chart" />Distribución por estado</h4>
+    <SegmentedBar Segments="_statusBarSegments" />
+    <div class="distribution-legend-row">
+        @foreach (var chip in _statusChips)
+        {
+            <button type="button" class="chip @(_statusFilter == chip.Value ? "chip--active" : "")"
+                    @onclick="() => QuickFilterStatus(chip.Value)">
+                <span class="donut-legend__dot" style="background:@chip.Color;"></span>@chip.Label (@chip.Count)
+            </button>
+        }
+    </div>
+</div>
+
+<div class="incidents-filters-row">
+    <div class="explorer-search">
+        <Icon Name="search" />
+        <input class="explorer-search__input" placeholder="Buscar por código o título..."
+               @bind="_search" @bind:event="oninput" />
     </div>
 
-    <div class="incident-row__meta">
-        <div class="incident-row__responsibles">
-            @if (Item.Responsibles.Count == 0)
+    <select class="input" @bind="_areaFilter">
+        <option value="">Todas las áreas</option>
+        @foreach (var area in _areas)
+        {
+            <option value="@area.Name">@area.Name</option>
+        }
+    </select>
+
+    <select class="input" @bind="_statusFilter">
+        <option value="">Todos los estados</option>
+        @foreach (var status in Enum.GetValues<IncidentStatus>())
+        {
+            <option value="@status">@IncidentLabels.Status(status)</option>
+        }
+    </select>
+
+    <select class="input" @bind="_priorityFilter">
+        <option value="">Todas las prioridades</option>
+        @foreach (var priority in Enum.GetValues<IncidentPriority>())
+        {
+            <option value="@priority">@IncidentLabels.Priority(priority)</option>
+        }
+    </select>
+
+    <button class="chip-incidencias @(_onlyActive ? "chip--active" : "")" @onclick="ToggleOnlyActive">
+        Solo activas
+    </button>
+</div>
+
+@if (!_pageItems.Any())
+{
+    <div class="empty-state">
+        <Icon Name="inbox" />
+        <h3>Sin resultados</h3>
+        <p>Ningún incidente coincide con los filtros aplicados.</p>
+    </div>
+}
+else
+{
+    <div class="incident-list">
+        @foreach (var item in _pageItems)
+        {
+            <IncidentListRow Item="item" />
+        }
+    </div>
+
+    <div class="pagination">
+        <button class="pagination__btn pagination__btn--nav" disabled="@(_page == 1)" @onclick="() => GoToPage(_page - 1)">
+            <Icon Name="chevron-left" />
+        </button>
+        @for (var p = 1; p <= _totalPages; p++)
+        {
+            var pageNumber = p;
+            <button class="pagination__btn @(pageNumber == _page ? "pagination__btn--active" : "")"
+                    @onclick="() => GoToPage(pageNumber)">
+                @pageNumber
+            </button>
+        }
+        <button class="pagination__btn pagination__btn--nav" disabled="@(_page == _totalPages)" @onclick="() => GoToPage(_page + 1)">
+            <Icon Name="chevron-right" />
+        </button>
+    </div>
+}
+
+@code {
+    [SupplyParameterFromQuery(Name = "estado")] public string? QueryStatus { get; set; }
+    [SupplyParameterFromQuery(Name = "prioridad")] public string? QueryPriority { get; set; }
+    [SupplyParameterFromQuery(Name = "area")] public string? QueryArea { get; set; }
+    [SupplyParameterFromQuery(Name = "buscar")] public string? QuerySearch { get; set; }
+
+    private const int PageSize = 8;
+
+    private IReadOnlyList<IncidentSummaryDto> _all = new List<IncidentSummaryDto>();
+    private IReadOnlyList<Area> _areas = new List<Area>();
+
+    private string _search = string.Empty;
+    private string _areaFilter = string.Empty;
+    private string _statusFilter = string.Empty;
+    private string _priorityFilter = string.Empty;
+    private bool _onlyActive;
+    private int _page = 1;
+
+    private List<(string Label, double Value, string Color)> _statusBarSegments = new();
+    private List<(string Label, string Value, int Count, string Color)> _statusChips = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _statusFilter = QueryStatus ?? string.Empty;
+        _priorityFilter = QueryPriority ?? string.Empty;
+        _areaFilter = QueryArea ?? string.Empty;
+        _search = QuerySearch ?? string.Empty;
+
+        _all = await Incidents.GetIncidentSummariesAsync();
+        _areas = await Incidents.GetAreasAsync();
+
+        foreach (var status in Enum.GetValues<IncidentStatus>())
+        {
+            var count = _all.Count(i => i.Status == status);
+            if (count == 0) continue;
+
+            var color = $"var(--status-{IncidentCssHelpers.StatusSuffix(status)})";
+            _statusBarSegments.Add((IncidentLabels.Status(status), count, color));
+            _statusChips.Add((IncidentLabels.Status(status), status.ToString(), count, color));
+        }
+    }
+
+    private void QuickFilterStatus(string statusValue)
+    {
+        _statusFilter = _statusFilter == statusValue ? string.Empty : statusValue;
+        _page = 1;
+    }
+
+    private IEnumerable<IncidentSummaryDto> _filtered => _all.Where(i =>
+        (string.IsNullOrWhiteSpace(_search)
+            || i.Title.Contains(_search, StringComparison.OrdinalIgnoreCase)
+            || i.Code.Contains(_search, StringComparison.OrdinalIgnoreCase)
+            || i.Responsibles.Any(r => r.FullName.Contains(_search, StringComparison.OrdinalIgnoreCase)))
+        && (string.IsNullOrEmpty(_areaFilter) || i.AreaName == _areaFilter)
+        && (string.IsNullOrEmpty(_statusFilter) || i.Status.ToString() == _statusFilter)
+        && (string.IsNullOrEmpty(_priorityFilter) || i.Priority.ToString() == _priorityFilter)
+        && (!_onlyActive || i.Status != IncidentStatus.Cerrada));
+
+    private int _totalPages => Math.Max(1, (int)Math.Ceiling(_filtered.Count() / (double)PageSize));
+
+    private List<IncidentSummaryDto> _pageItems =>
+        _filtered.Skip((_page - 1) * PageSize).Take(PageSize).ToList();
+
+    private void ToggleOnlyActive()
+    {
+        _onlyActive = !_onlyActive;
+        _page = 1;
+    }
+
+    private void GoToPage(int page)
+    {
+        _page = Math.Clamp(page, 1, _totalPages);
+    }
+}
+
+
+
+
+
+
+@page "/incidencias/{Id:guid}"
+@rendermode InteractiveServer
+@inject IIncidentService Incidents
+@inject ISecurityService Security
+@inject NavigationManager Nav
+@inject IToastService Toast
+@inject IJSRuntime JSRuntime
+@using CorpWiki.Web.Extensions
+@using CorpWiki.Web.Components.Shared.Incidents
+@using CorpWiki.Web.Components.Shared
+@using CorpWiki.Web.Services
+@using CorpWiki.Domain.Entities.Security
+@using CorpWiki.Application.Helpers
+<PageTitle>DaviWiki - @(_detail?.Code ?? "Incidencia")</PageTitle>
+
+@if (_detail is null)
+{
+    <div class="empty-state">
+        <Icon Name="alert-triangle" Class="empty-state__icon" />
+        <h2>Incidencia no encontrada</h2>
+        <p>Puede que se haya movido o el enlace esté roto.</p>
+        <a class="btn btn--primary" href="/incidencias/listado">Ver todas las incidencias</a>
+    </div>
+}
+else
+{
+    <Breadcrumb Items="_breadcrumb" />
+
+    <div class="page-header">
+        <div>
+            <span class="incident-detail-code">@_detail.Code</span>
+            <h1>@_detail.Title</h1>
+            <div style="display:flex; gap:8px; margin-top:10px; flex-wrap:wrap; align-items:center;">
+                <IncidentStatusBadge Status="_detail.Status" />
+                <IncidentPriorityBadge Priority="_detail.Priority" />
+                @if (_detail.ReactivationCount > 0)
+                {
+                    <span class="badge"><Icon Name="rotate-ccw" />Reactivada x@_detail.ReactivationCount</span>
+                }
+                @if (_detail.Status != IncidentStatus.Cerrada)
+                {
+                    <span class="badge badge--outline"><Icon Name="clock" />Abierta hace @((DateTime.Now - _detail.CreatedAt).Days) días</span>
+                }
+            </div>
+        </div>
+        <div class="page-header__actions">
+            @if (_detail.Status != IncidentStatus.Cerrada)
             {
-                <span class="incident-row__no-responsible">Sin responsables</span>
+                <button class="btn btn--danger btn--sm" @onclick="RequestCloseConfirmation">
+                    <Icon Name="check-circle" /> Cerrar
+                </button>
             }
             else
             {
-                @foreach (var r in Item.Responsibles.Take(3))
-                {
-                    <UserAvatar FullName="@r.FullName" Initials="@r.Initials"
-                                ColorFrom="@r.AvatarColorFrom" ColorTo="@r.AvatarColorTo"
-                                Size="UserAvatar.AvatarSize.Sm" />
-                }
-                @if (Item.Responsibles.Count > 3)
-                {
-                    <span class="incident-row__more">+@(Item.Responsibles.Count - 3)</span>
-                }
+                <button class="btn btn--secondary btn--sm" @onclick="RequestReactivateConfirmation">
+                    <Icon Name="rotate-ccw" /> Reactivar
+                </button>
             }
         </div>
-
-        <div class="incident-row__stats">
-            <span><Icon Name="message-circle" /> @Item.CommentsCount</span>
-            <span><Icon Name="arrow-right" /> @Item.TransfersCount</span>
-            <span><Icon Name="clock" /> @Item.UpdatedAt.ToRelativeLabel()</span>
-        </div>
     </div>
-</a>
 
-@code {
-    [Parameter, EditorRequired] public IncidentSummaryDto Item { get; set; } = null!;
-}
+    <div class="detail-tabs" role="tablist">
+        <button class="detail-tabs__item @(_activeTab == "resumen" ? "detail-tabs__item--active" : "")"
+                role="tab" aria-selected="@(_activeTab == "resumen")" @onclick='() => SetTab("resumen")'>
+            <Icon Name="file-text" /> Resumen
+        </button>
+        <button class="detail-tabs__item @(_activeTab == "actividad" ? "detail-tabs__item--active" : "")"
+                role="tab" aria-selected="@(_activeTab == "actividad")" @onclick='() => SetTab("actividad")'>
+            <Icon Name="activity" /> Actividad
+            <span class="detail-tabs__count">@(_detail.Activity.Count + _detail.Comments.Count)</span>
+        </button>
+        <button class="detail-tabs__item @(_activeTab == "gestion" ? "detail-tabs__item--active" : "")"
+                role="tab" aria-selected="@(_activeTab == "gestion")" @onclick='() => SetTab("gestion")'>
+            <Icon Name="settings" /> Gestión
+            @if (_detail.Transfers.Count > 0)
+            {
+                <span class="detail-tabs__count">@_detail.Transfers.Count</span>
+            }
+        </button>
+    </div>
 
+    @if (_activeTab == "resumen")
+    {
+        <div class="detail-tabs__panel">
+            @if (_journey.Count > 1)
+            {
+                <div class="card" style="padding: var(--space-5) var(--space-6); margin-bottom: var(--space-6);">
+                    <div style="display:flex; align-items:center; justify-content:space-between; gap:var(--space-3); margin-bottom: var(--space-3); flex-wrap:wrap;">
+                        <h4 class="widget__title" style="margin-bottom:0;"><Icon Name="workflow" />Recorrido entre áreas</h4>
+                        <button class="btn btn--secondary btn--sm" @onclick="() => OpenJourneyModal(0)">
+                            <Icon Name="eye" /> Ver recorrido detallado
+                        </button>
+                    </div>
 
+                    <div class="journey-stepper">
+                        @for (var i = 0; i < _journey.Count; i++)
+                        {
+                            var index = i;
+                            var node = _journey[i];
 
+                            <div class="journey-stepper__node journey-stepper__node--interactive @(node.IsCurrent ? "journey-stepper__node--current" : "")"
+                                 style="animation-delay: @($"{i * 60}ms");"
+                                 @onclick="() => OpenJourneyModal(index)"
+                                 title="Ver detalle de @node.AreaName">
+                                <span class="journey-stepper__icon" style="background:@node.Color;">
+                                    <Icon Name="@node.Icon" Class="journey-stepper__icon-svg" />
+                                </span>
+                                @node.AreaName
+                            </div>
+                            @if (i < _journey.Count - 1)
+                            {
+                                <Icon Name="chevron-right" Class="journey-stepper__arrow" />
+                            }
+                        }
+                    </div>
+                    <p class="form-hint" style="margin-top:var(--space-2);">
+                        <Icon Name="mouse-pointer-click" /> Hacé clic en un área para ver su historia completa.
+                    </p>
+                </div>
+            }
 
-<div class="incident-meta-grid__item">
-    <span class="incident-meta-grid__label"><Icon Name="user-check" />Responsables</span>
-    <span class="incident-meta-grid__value">
-        @if (_detail.Responsibles.Count == 0)
-        {
-            <span>Sin responsables</span>
-        }
-        else
-        {
-            <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
-                @foreach (var r in _detail.Responsibles)
-                {
-                    <UserAvatar FullName="@r.FullName" Initials="@r.Initials"
-                                ColorFrom="@r.AvatarColorFrom" ColorTo="@r.AvatarColorTo" Size="UserAvatar.AvatarSize.Sm" />
-                }
-                <span>@string.Join(", ", _detail.Responsibles.Select(r => r.FullName))</span>
+            @if (_areaTimeSegments.Count > 0)
+            {
+                <div class="card" style="padding: var(--space-6); margin-bottom: var(--space-6);">
+                    <h4 class="widget__title" style="margin-bottom: var(--space-3);"><Icon Name="layers-3" />Tiempo por equipo</h4>
+                    <div class="donut-widget__row">
+                        <DonutChart Segments="_areaTimeSegments" CenterValue="@_areaTimeSegments.Count.ToString()" CenterLabel="equipos"
+                                    OnSegmentClick="OpenAreaModal" ActiveLabel="@_selectedAreaName" />
+                        <DonutLegend Items="_areaTimeLegend" OnItemClick="OpenAreaModal" ActiveLabel="@_selectedAreaName" />
+                    </div>
+                </div>
+            }
+
+            <div class="card" style="padding: var(--space-6); margin-bottom: var(--space-6);
+                                    border-top: 3px solid var(--priority-@IncidentCssHelpers.PrioritySuffix(_detail.Priority));
+                                    @(_detail.Priority == IncidentPriority.Critica ? "box-shadow: var(--shadow-glow);" : "")">
+                <div class="incident-meta-grid">
+                    <div class="incident-meta-grid__item">
+                        <span class="incident-meta-grid__label"><Icon Name="layers-3" />Área de origen</span>
+                        <span class="incident-meta-grid__value"><AreaBadge Name="@_detail.OriginAreaName" Color="@_detail.OriginAreaColor" ShowIcon="false" Small="true" /></span>
+                    </div>
+                    <div class="incident-meta-grid__item">
+                        <span class="incident-meta-grid__label"><Icon Name="arrow-right" />Área actual</span>
+                        <span class="incident-meta-grid__value"><AreaBadge Name="@_detail.CurrentAreaName" Color="@_detail.CurrentAreaColor" ShowIcon="false" Small="true" /></span>
+                    </div>
+                    <div class="incident-meta-grid__item">
+                        <span class="incident-meta-grid__label"><Icon Name="plus-circle" />Reportado por</span>
+                        <span class="incident-meta-grid__value">
+                            <UserAvatar FullName="@_detail.CreatedByName" Initials="@_detail.CreatedByInitials"
+                                        ColorFrom="@_detail.CreatedByAvatarColorFrom" ColorTo="@_detail.CreatedByAvatarColorTo" Size="UserAvatar.AvatarSize.Sm" />
+                            @_detail.CreatedByName
+                        </span>
+                    </div>
+                    <div class="incident-meta-grid__item">
+                        <span class="incident-meta-grid__label"><Icon Name="user-check" />Responsables</span>
+                        <span class="incident-meta-grid__value">
+                            @if (_detail.Responsibles.Count == 0)
+                            {
+                                <span>Sin asignar</span>
+                            }
+                            else
+                            {
+                                <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
+                                    @foreach (var r in _detail.Responsibles)
+                                    {
+                                        <UserAvatar FullName="@r.FullName" Initials="@r.Initials"
+                                                    ColorFrom="@r.AvatarColorFrom" ColorTo="@r.AvatarColorTo" Size="UserAvatar.AvatarSize.Sm" />
+                                    }
+                                    <span>@string.Join(", ", _detail.Responsibles.Select(r => r.FullName))</span>
+                                </div>
+                            }
+                        </span>
+                    </div>
+                    <div class="incident-meta-grid__item">
+                        <span class="incident-meta-grid__label"><Icon Name="clock" />Creada</span>
+                        <span class="incident-meta-grid__value">@_detail.CreatedAt.ToString("d MMM yyyy, HH:mm")</span>
+                    </div>
+                    <div class="incident-meta-grid__item">
+                        <span class="incident-meta-grid__label"><Icon Name="refresh-cw" />Actualizada</span>
+                        <span class="incident-meta-grid__value">@_detail.UpdatedAt.ToRelativeLabel()</span>
+                    </div>
+                    @if (_detail.ClosedAt.HasValue)
+                    {
+                        <div class="incident-meta-grid__item">
+                            <span class="incident-meta-grid__label"><Icon Name="check-circle" />Cerrada</span>
+                            <span class="incident-meta-grid__value">@_detail.ClosedAt.Value.ToString("d MMM yyyy, HH:mm")</span>
+                        </div>
+                    }
+                </div>
+
+                <div class="time-summary">
+                    <DonutChart Segments="_timeSegmentsChart" Size="120" Thickness="16"
+                                CenterValue="@($"{_detail.TotalHours:0.#}h")" CenterLabel="total" />
+                    <div style="flex:1; min-width:220px;">
+                        <IncidentTimeBar ActiveHours="_detail.TotalActiveHours" DeadHours="_detail.TotalDeadHours" />
+                    </div>
+                </div>
             </div>
-        }
-    </span>
-</div>
 
+            <div class="card" style="padding: var(--space-6); margin-bottom: var(--space-6);">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: var(--space-3);">
+                    <h4 class="widget__title"><Icon Name="file-text" />Descripción</h4>
+                    @if (!_editingContent)
+                    {
+                        <button class="btn btn--secondary btn--sm" @onclick="StartEditContent">
+                            <Icon Name="pencil" /> Editar
+                        </button>
+                    }
+                </div>
 
-
-
-
-<div class="incident-meta-grid__item">
-    <span class="incident-meta-grid__label"><Icon Name="user-check" />Responsables</span>
-    <span class="incident-meta-grid__value">
-        @if (_detail.Responsibles.Count == 0)
-        {
-            <span>Sin responsables</span>
-        }
-        else
-        {
-            <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
-                @foreach (var r in _detail.Responsibles)
+                @if (_editingContent)
                 {
-                    <UserAvatar FullName="@r.FullName" Initials="@r.Initials"
-                                ColorFrom="@r.AvatarColorFrom" ColorTo="@r.AvatarColorTo" Size="UserAvatar.AvatarSize.Sm" />
+                    <Editra @bind-Blocks="_contentDraft" />
+                    <div class="form-actions" style="margin-top: var(--space-3);">
+                        <button class="btn btn--secondary btn--sm" @onclick="CancelEditContent">Cancelar</button>
+                        <button class="btn btn--primary btn--sm" @onclick="SaveContent">
+                            <Icon Name="check-circle" /> Guardar
+                        </button>
+                    </div>
                 }
-                <span>@string.Join(", ", _detail.Responsibles.Select(r => r.FullName))</span>
-            </div>
-        }
-    </span>
-</div>
-
-
-
-
-
-
-@if (_activeTab == "gestion")
-{
-    <div class="detail-tabs__panel">
-        <div class="management-grid">
-
-            <div class="card widget">
-                <h4 class="widget__title"><Icon Name="users" />Equipo responsable actual</h4>
-                @if (_detail.Responsibles.Count == 0)
+                else if (_detail.Content is { Count: > 0 })
                 {
-                    <p class="section-header__subtitle">Nadie tiene esta incidencia asignada en este momento.</p>
+                    <p>@_detail.Description</p>
+                    <ArticleBody Blocks="_detail.Content" />
                 }
                 else
                 {
-                    @foreach (var r in _detail.Responsibles)
+                    <p>@_detail.Description</p>
+                }
+            </div>
+
+            @if (_detail.Attachments.Count > 0 || _detail.RelatedArticles.Count > 0)
+            {
+                <div class="info-grid">
+                    @if (_detail.Attachments.Count > 0)
                     {
-                        <div class="activity-row">
-                            <UserAvatar FullName="@r.FullName" Initials="@r.Initials"
-                                        ColorFrom="@r.AvatarColorFrom" ColorTo="@r.AvatarColorTo" Size="UserAvatar.AvatarSize.Sm" />
-                            <div style="flex:1; min-width:0;">
-                                <p class="activity-row__text"><strong>@r.FullName</strong></p>
-                                <p class="activity-row__time">@r.AreaName</p>
-                            </div>
+                        <div class="widget card">
+                            <h4 class="widget__title"><Icon Name="paperclip" />Adjuntos</h4>
+                            @foreach (var file in _detail.Attachments)
+                            {
+                                <div class="file-row" style="margin-bottom: var(--space-2);">
+                                    <span class="file-row__icon"><Icon Name="file-text" /></span>
+                                    <span class="file-row__info">
+                                        <span class="file-row__name">@file.FileName</span>
+                                        <span class="file-row__meta">@file.FileType · @file.SizeLabel</span>
+                                    </span>
+                                </div>
+                            }
                         </div>
                     }
+
+                    @if (_detail.RelatedArticles.Count > 0)
+                    {
+                        <div class="widget card">
+                            <h4 class="widget__title"><Icon Name="file-text" />Artículos relacionados</h4>
+                            @foreach (var article in _detail.RelatedArticles)
+                            {
+                                <a class="external-link-row" style="margin-bottom: var(--space-2);" href="@($"/articulos/{article.Slug}")">
+                                    <Icon Name="file-text" /> @article.Title
+                                </a>
+                            }
+                        </div>
+                    }
+                </div>
+            }
+        </div>
+    }
+
+    @if (_activeTab == "actividad")
+    {
+        <div class="detail-tabs__panel">
+            <section class="section">
+                <h3>Historial (@_detail.Activity.Count)</h3>
+                <div class="card widget">
+                    <div class="version-timeline">
+                        @foreach (var entry in _detail.Activity.OrderByDescending(a => a.OccurredAt))
+                        {
+                            var color = IncidentCssHelpers.ActivityColor(entry.Type);
+                            <div class="version-row">
+                                <span class="version-row__dot" style="background:@color;"></span>
+                                <div>
+                                    <p class="version-row__label">
+                                        <span class="version-row__type-icon" style="color:@color;">
+                                            <Icon Name="@IncidentCssHelpers.ActivityIcon(entry.Type)" Class="version-row__type-icon-svg" />
+                                        </span>
+                                        @entry.ActorName
+                                    </p>
+                                    <p class="version-row__summary">@entry.Description</p>
+                                    <p class="version-row__date">@entry.OccurredAt.ToRelativeLabel()</p>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                </div>
+            </section>
+
+            <section class="section" style="margin-top: var(--space-6);">
+                <h3>Comentarios (@_detail.Comments.Count)</h3>
+                <div class="card" style="padding: var(--space-5);">
+                    <div class="comment-composer">
+                        <textarea class="input" rows="2" placeholder="Escribí un comentario..." @bind="_newComment"></textarea>
+                        <button class="btn btn--primary btn--sm" @onclick="AddCommentAction">Comentar</button>
+                    </div>
+                    <div class="comments-list">
+                        @foreach (var c in _detail.Comments.OrderByDescending(c => c.CreatedAt))
+                        {
+                            <div class="comment-card">
+                                <span class="avatar avatar--sm">@c.AuthorInitials</span>
+                                <div class="comment-card__body">
+                                    <div class="comment-card__head">
+                                        <span class="comment-card__author">@c.AuthorName</span>
+                                        <span class="comment-card__date">@c.CreatedAt.ToRelativeLabel()</span>
+                                    </div>
+                                    <p class="comment-card__text">@c.Text</p>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                </div>
+            </section>
+        </div>
+    }
+
+    @if (_activeTab == "gestion")
+    {
+        <div class="detail-tabs__panel">
+            <div class="management-grid">
+
+                <div class="card widget">
+                    <h4 class="widget__title"><Icon Name="users" />Equipo responsable actual</h4>
+                    @if (_detail.Responsibles.Count == 0)
+                    {
+                        <p class="section-header__subtitle">Nadie tiene esta incidencia asignada en este momento.</p>
+                    }
+                    else
+                    {
+                        @foreach (var r in _detail.Responsibles)
+                        {
+                            <div class="activity-row">
+                                <UserAvatar FullName="@r.FullName" Initials="@r.Initials"
+                                            ColorFrom="@r.AvatarColorFrom" ColorTo="@r.AvatarColorTo" Size="UserAvatar.AvatarSize.Sm" />
+                                <div style="flex:1; min-width:0;">
+                                    <p class="activity-row__text"><strong>@r.FullName</strong></p>
+                                    <p class="activity-row__time">@r.AreaName</p>
+                                </div>
+                            </div>
+                        }
+                    }
+
+                    @if (IsCurrentUserResponsible)
+                    {
+                        <button class="btn btn--secondary btn--sm" style="margin-top: var(--space-3);" @onclick="RequestSelfRemoveConfirmation">
+                            <Icon Name="user-x" /> Desresponsabilizarme
+                        </button>
+                    }
+                </div>
+
+                @if (_detail.Status != IncidentStatus.Cerrada && (_detail.Responsibles.Count == 0 || IsCurrentUserResponsible))
+                {
+                    <div class="card widget">
+                        <h4 class="widget__title"><Icon Name="user-check" />Sumar responsable de mi equipo</h4>
+                        <p class="form-hint">Solo personas de @_detail.CurrentAreaName.</p>
+                        <div class="form-group">
+                            <select class="input" @bind="_addResponsibleUserId">
+                                <option value="">Seleccioná un compañero</option>
+                                @foreach (var u in _currentAreaUsers.Where(u => !_detail.Responsibles.Any(r => r.Id == u.Id)))
+                                {
+                                    <option value="@u.Id">@u.FullName - @u.Position</option>
+                                }
+                            </select>
+                        </div>
+                        <button class="btn btn--secondary btn--sm" @onclick="AddResponsibleAction" disabled="@(!_addResponsibleUserId.HasValue)">
+                            Agregar
+                        </button>
+                    </div>
                 }
+
+                <div class="card widget">
+                    <h4 class="widget__title"><Icon Name="refresh-cw" />Cambiar estado</h4>
+                    <div class="form-group">
+                        <select class="input" @bind="_newStatus">
+                            @foreach (var s in Enum.GetValues<IncidentStatus>())
+                            {
+                                <option value="@s">@IncidentLabels.Status(s)</option>
+                            }
+                        </select>
+                    </div>
+                    <button class="btn btn--secondary btn--sm" @onclick="ChangeStatusAction">Actualizar estado</button>
+                </div>
 
                 @if (IsCurrentUserResponsible)
                 {
-                    <button class="btn btn--secondary btn--sm" style="margin-top: var(--space-3);" @onclick="RequestSelfRemoveConfirmation">
-                        <Icon Name="user-x" /> Desresponsabilizarme
-                    </button>
+                    <div class="card widget" style="margin-bottom: var(--space-5);">
+                        <h4 class="widget__title"><Icon Name="arrow-right" />Reenviar a otra área</h4>
+                        <p class="form-hint">Al reenviar, todo tu equipo actual deja de ser responsable.</p>
+                        <div class="form-group">
+                            <select class="input" value="@(_delegateAreaId?.ToString() ?? "")" @onchange="OnDelegateAreaChanged">
+                                <option value="">Área destino</option>
+                                @foreach (var area in _areas.Where(a => a.Id != _detail.CurrentAreaId))
+                                {
+                                    <option value="@area.Id">@area.Name</option>
+                                }
+                            </select>
+                        </div>
+
+                        @if (_delegateAreaId.HasValue)
+                        {
+                            <div class="form-group">
+                                <label class="form-label">Nuevo(s) responsable(s)</label>
+                                <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                                    @foreach (var u in _delegateAreaUsers)
+                                    {
+                                        var uid = u.Id;
+                                        <button type="button" class="chip @(_delegateUserIds.Contains(uid) ? "chip--active" : "")"
+                                                @onclick="() => ToggleDelegateUser(uid)">
+                                            @u.FullName
+                                        </button>
+                                    }
+                                </div>
+                            </div>
+                        }
+
+                        <div class="form-group">
+                            <textarea class="input" rows="2" placeholder="Motivo del reenvío" @bind="_delegateReason"></textarea>
+                        </div>
+
+                        <button class="btn btn--secondary btn--sm" @onclick="DelegateAction"
+                                disabled="@(!_delegateAreaId.HasValue || _delegateUserIds.Count == 0)">
+                            Reenviar
+                        </button>
+                    </div>
+                }
+
+                @if (_detail.Transfers.Count > 0)
+                {
+                    <div class="widget card">
+                        <h4 class="widget__title"><Icon Name="arrow-right" />Historial de transferencias (@_detail.Transfers.Count)</h4>
+                        @foreach (var t in _detail.Transfers.OrderByDescending(t => t.TransferredAt))
+                        {
+                            <div class="activity-row">
+                                <div class="activity-row__icon" style="background:rgba(236,72,153,0.14); color:#ec4899;">
+                                    <Icon Name="arrow-right" />
+                                </div>
+                                <div style="flex:1; min-width:0;">
+                                    <p class="activity-row__text">@t.FromAreaName &rarr; <strong>@t.ToAreaName</strong> (@t.ToUserName)</p>
+                                    <p class="activity-row__time">@t.Reason · @t.TransferredAt.ToRelativeLabel()</p>
+                                </div>
+                            </div>
+                        }
+                    </div>
                 }
             </div>
+        </div>
+    }
+}
 
-            @if (_detail.Status != IncidentStatus.Cerrada && (_detail.Responsibles.Count == 0 || IsCurrentUserResponsible))
-            {
-                <div class="card widget">
-                    <h4 class="widget__title"><Icon Name="user-check" />Sumar responsable de mi equipo</h4>
-                    <p class="form-hint">Solo personas de @_detail.CurrentAreaName.</p>
-                    <div class="form-group">
-                        <select class="input" @bind="_addResponsibleUserId">
-                            <option value="">Seleccioná un compañero</option>
-                            @foreach (var u in _currentAreaUsers.Where(u => !_detail.Responsibles.Any(r => r.Id == u.Id)))
-                            {
-                                <option value="@u.Id">@u.FullName - @u.Position</option>
-                            }
-                        </select>
-                    </div>
-                    <button class="btn btn--secondary btn--sm" @onclick="AddResponsibleAction" disabled="@(!_addResponsibleUserId.HasValue)">
-                        Agregar
-                    </button>
+@if (_showJourneyModal && _journeyStep is not null)
+{
+    <div class="journey-modal-overlay" @onclick="CloseJourneyModal">
+        <div class="journey-modal @(_isExpanded ? "journey-modal--expanded" : "")" @onclick:stopPropagation="true">
+            <div class="journey-modal__header" style="background:@ColorUtils.ToRgba(_journeyStep.Color, 0.14); color:@_journeyStep.Color;">
+                <span class="journey-modal__header-icon" style="background:@_journeyStep.Color;">
+                    <Icon Name="@_journeyStep.Icon" />
+                </span>
+                <div style="flex:1; min-width:0;">
+                    <h3 class="journey-modal__title">@_journeyStep.AreaName</h3>
+                    <span class="journey-modal__step-label">Etapa #@(_journeyStepIndex + 1) de @_journey.Count</span>
+                    <span class="journey-stage-badge">@GetJourneyStageLabel()</span>
                 </div>
-            }
-
-            <div class="card widget">
-                <h4 class="widget__title"><Icon Name="refresh-cw" />Cambiar estado</h4>
-                <div class="form-group">
-                    <select class="input" @bind="_newStatus">
-                        @foreach (var s in Enum.GetValues<IncidentStatus>())
-                        {
-                            <option value="@s">@IncidentLabels.Status(s)</option>
-                        }
-                    </select>
+                <div class="journey-progress">
+                    <div class="journey-progress__fill" style="width:@($"{((_journeyStepIndex + 1) * 100.0 / _journey.Count):F0}%")"></div>
                 </div>
-                <button class="btn btn--secondary btn--sm" @onclick="ChangeStatusAction">Actualizar estado</button>
+                <button class="journey-modal__expand-btn" @onclick="ToggleExpandModal">
+                    @if (_isExpanded)
+                    {
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3" />
+                        </svg>
+                    }
+                    else
+                    {
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
+                        </svg>
+                    }
+                </button>
+                <button class="btn btn--ghost btn--sm" @onclick="CloseJourneyModal"><Icon Name="x-circle" /></button>
             </div>
 
-            @if (IsCurrentUserResponsible)
-            {
-                <div class="card widget" style="margin-bottom: var(--space-5);">
-                    <h4 class="widget__title"><Icon Name="arrow-right" />Reenviar a otra área</h4>
-                    <p class="form-hint">Al reenviar, todo tu equipo actual deja de ser responsable.</p>
-                    <div class="form-group">
-                        <select class="input" value="@(_delegateAreaId?.ToString() ?? "")" @onchange="OnDelegateAreaChanged">
-                            <option value="">Área destino</option>
-                            @foreach (var area in _areas.Where(a => a.Id != _detail.CurrentAreaId))
+            <div class="journey-context">
+                <div class="journey-context__block">
+                    <span class="journey-context__label">Recorrido del incidente</span>
+                    <div class="journey-context__route">
+                        @for (var i = 0; i < _journey.Count; i++)
+                        {
+                            var idx = i;
+                            var area = _journey[idx];
+                            var isReturn = _journey.Take(idx).Any(x => x.AreaName == area.AreaName);
+
+                            <span class="journey-context__area @(idx == _journeyStepIndex ? "journey-context__area--active" : "")"
+                                  @onclick="() => GoToJourneyStep(idx)"
+                                  title="Paso @(idx + 1): @area.AreaName">
+                                @(idx + 1).@area.AreaName
+                                @if (isReturn)
+                                {
+                                    <span class="journey-return">Retorno</span>
+                                }
+                            </span>
+                            @if (idx < _journey.Count - 1)
                             {
-                                <option value="@area.Id">@area.Name</option>
+                                <Icon Name="chevron-right" />
                             }
-                        </select>
+                        }
+                    </div>
+                </div>
+
+                <div class="journey-context__block journey-context__status">
+                    <span class="journey-context__label">Estado actual</span>
+                    <span class="journey-stage-badge">@GetJourneyStageLabel()</span>
+                </div>
+            </div>
+
+            <div class="journey-summary">
+                <Icon Name="info" Class="journey-summary__icon" />
+                <p class="journey-summary__text">@BuildJourneySummary()</p>
+            </div>
+
+            <div class="@($"journey-modal__body journey-modal__body--{_journeyDirection}")" @key="_journeyStepIndex">
+                @if (_isExpanded)
+                {
+                    <div class="journey-modal__col">
+                        <div class="journey-context">
+                            <div class="journey-context__block">
+                                <span class="journey-context__label">Recorrido del incidente</span>
+                                <div class="journey-context__route">
+                                    @for (var i = 0; i < _journey.Count; i++)
+                                    {
+                                        var idx = i;
+                                        var area = _journey[idx];
+                                        var isReturn = _journey.Take(idx).Any(x => x.AreaName == area.AreaName);
+
+                                        <span class="journey-context__area @(idx == _journeyStepIndex ? "journey-context__area--active" : "")"
+                                              @onclick="() => GoToJourneyStep(idx)"
+                                              title="Paso @(idx + 1): @area.AreaName">
+                                            @(idx + 1).@area.AreaName
+                                            @if (isReturn)
+                                            {
+                                                <span class="journey-return">Retorno</span>
+                                            }
+                                        </span>
+                                        @if (idx < _journey.Count - 1)
+                                        {
+                                            <Icon Name="chevron-right" />
+                                        }
+                                    }
+                                </div>
+                            </div>
+
+                            <div class="journey-context__block journey-context__status">
+                                <span class="journey-context__label">Estado actual</span>
+                                <span class="journey-stage-badge">@GetJourneyStageLabel()</span>
+                            </div>
+                        </div>
+
+                        <div class="journey-summary">
+                            <Icon Name="info" Class="journey-summary__icon" />
+                            <p class="journey-summary__text">@BuildJourneySummary()</p>
+                        </div>
+
+                        <div class="journey-metrics-wrapper">
+                            <h4 class="widget_title journey-section journey-section--delay-1">Métricas</h4>
+                            <div class="journey-metrics">
+                                <div class="journey-metric journey-metric--work">
+                                    <Icon Name="activity" />
+                                    <div>
+                                        <span class="journey-metric__value">@_journeyStep.ActiveHours.ToString("0.#") h</span>
+                                        <span class="journey-metric__label">Trabajo efectivo</span>
+                                    </div>
+                                </div>
+                                <div class="journey-metric journey-metric--wait">
+                                    <Icon Name="clock" />
+                                    <div>
+                                        <span class="journey-metric__value">@_journeyStep.DeadHours.ToString("0.#") h</span>
+                                        <span class="journey-metric__label">Tiempo en espera</span>
+                                    </div>
+                                </div>
+                                <div class="journey-metric journey-metric--distribution">
+                                    <Icon Name="pie-chart" />
+                                    <div>
+                                        <span class="journey-metric__value">@GetActivePercentage()%</span>
+                                        <span class="journey-metric__label">Trabajo efectivo</span>
+                                        <small>@GetWaitingPercentage()% espera</small>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        @if (_journeyStep.Transfers.Count > 0)
+                        {
+                            <h4 class="widget_title journey-section" style="margin-top:var(--space-5);">
+                                <Icon Name="arrow-right" /> Transferencias relacionadas
+                                <span class="journey-section__count">@_journeyStep.Transfers.Count</span>
+                            </h4>
+                            @foreach (var t in _journeyStep.Transfers)
+                            {
+                                <div class="journey-transfer-card">
+                                    <p class="journey-transfer-card__title">Transferencia realizada</p>
+                                    <div class="journey-transfer-card__grid">
+                                        <div><span class="journey-transfer-card__label">Origen</span><strong>@t.FromAreaName</strong></div>
+                                        <div><span class="journey-transfer-card__label">Destino</span><strong>@t.ToAreaName</strong></div>
+                                        <div><span class="journey-transfer-card__label">Responsable</span><strong>@t.ToUserName</strong></div>
+                                        <div><span class="journey-transfer-card__label">Fecha</span><strong>@t.TransferredAt.ToRelativeLabel()</strong></div>
+                                    </div>
+                                </div>
+                            }
+                        }
+
+                        @if (_journeyStep.Comments.Count > 0)
+                        {
+                            <h4 class="widget_title journey-section" style="margin-top:var(--space-5);">
+                                <Icon Name="message-circle" /> Comentarios del equipo
+                                <span class="journey-section__count">@_journeyStep.Comments.Count</span>
+                            </h4>
+                            @foreach (var c in _journeyStep.Comments)
+                            {
+                                <div class="journey-comment">
+                                    <span class="avatar avatar--sm">@InitialsOf(c.AuthorName)</span>
+                                    <div style="flex:1; min-width:0;">
+                                        <p class="journey-comment__meta"><strong>@c.AuthorName</strong> &bull; @c.CreatedAt.ToRelativeLabel()</p>
+                                        <p class="journey-comment__text">@c.Text</p>
+                                    </div>
+                                </div>
+                            }
+                        }
                     </div>
 
-                    @if (_delegateAreaId.HasValue)
-                    {
-                        <div class="form-group">
-                            <label class="form-label">Nuevo(s) responsable(s)</label>
-                            <div style="display:flex; gap:8px; flex-wrap:wrap;">
-                                @foreach (var u in _delegateAreaUsers)
+                    <div class="journey-modal__col">
+                        <div class="journey-team-wrapper">
+                            <h4 class="widget_title journey-section journey-section--delay-2">
+                                <Icon Name="users" /> Personas del equipo
+                                <span class="journey-section__count">@_journeyStep.Users.Count</span>
+                            </h4>
+                            @{
+                                var responsibleIds = ResponsibleIds;
+                                var responsibleUsers = _journeyStep.Users.Where(u => responsibleIds.Contains(u.Id)).ToList();
+                                var others = _journeyStep.Users.Where(u => !responsibleIds.Contains(u.Id)).ToList();
+                            }
+                            @if (_journeyStep.Users.Count == 0)
+                            {
+                                <div class="journey-empty">
+                                    <Icon Name="users" />
+                                    <p class="journey-empty__title">Sin participantes registrados</p>
+                                    <p class="journey-empty__desc">Esta área todavía no tiene usuarios asociados.</p>
+                                </div>
+                            }
+                            else
+                            {
+                                <div class="person-row-list">
+                                    @foreach (var resp in responsibleUsers)
+                                    {
+                                        <div class="activity-row activity-row--highlight">
+                                            <span class="avatar avatar--sm">@InitialsOf(resp.FullName)</span>
+                                            <div style="flex:1; min-width:0;">
+                                                <p class="activity-row__text">
+                                                    <span class="badge badge--brand">
+                                                        <Icon Name="star" /> Responsable actual
+                                                    </span>
+                                                    @if (!string.IsNullOrEmpty(GetResponsibleSince(resp.Id)))
+                                                    {
+                                                        <p class="journey-responsible-time">Desde @GetResponsibleSince(resp.Id)</p>
+                                                    }
+                                                    <br />
+                                                    <strong>@resp.FullName</strong>
+                                                </p>
+                                                <p class="activity-row__time">@resp.Position</p>
+                                            </div>
+                                        </div>
+                                    }
+                                    @if (others.Count > 0)
+                                    {
+                                        <p class="journey-subheading">Otros participantes</p>
+                                        @foreach (var u in others)
+                                        {
+                                            <div class="activity-row">
+                                                <span class="avatar avatar--sm">@InitialsOf(u.FullName)</span>
+                                                <div style="flex:1; min-width:0;">
+                                                    <p class="activity-row__text"><strong>@u.FullName</strong></p>
+                                                    <p class="activity-row__time">@u.Position</p>
+                                                </div>
+                                            </div>
+                                        }
+                                    }
+                                </div>
+                            }
+                        </div>
+
+                        <div class="journey-activity-wrapper">
+                            <h4 class="widget_title journey-section journey-section--delay-3">
+                                <Icon Name="history" /> Qué hizo el equipo
+                                <span class="journey-section__count">@_journeyStep.Activity.Count</span>
+                            </h4>
+                            @if (_journeyStep.Activity.Count == 0)
+                            {
+                                <div class="journey-empty">
+                                    <Icon Name="inbox" />
+                                    <p class="journey-empty__title">Sin actividad registrada</p>
+                                    <p class="journey-empty__desc">Nadie de este equipo generó actividad todavía.</p>
+                                </div>
+                            }
+                            else
+                            {
+                                <div class="journey-timeline">
+                                    @foreach (var entry in _journeyStep.Activity)
+                                    {
+                                        var color = IncidentCssHelpers.ActivityColor(entry.Type);
+                                        <div class="journey-timeline__item">
+                                            <div class="journey-timeline__dot" style="background:@ColorUtils.ToRgba(color, 0.14); color:@color;">
+                                                <Icon Name="@IncidentCssHelpers.ActivityIcon(entry.Type)" />
+                                            </div>
+                                            <div class="journey-timeline__content">
+                                                <p class="activity-row__text"><strong>@entry.ActorName</strong> @entry.Description</p>
+                                                <p class="activity-row__time">@entry.OccurredAt.ToRelativeLabel()</p>
+                                            </div>
+                                        </div>
+                                    }
+                                </div>
+                            }
+                        </div>
+                    </div>
+                }
+                else
+                {
+                    <div class="journey-context">
+                        <div class="journey-context__block">
+                            <span class="journey-context__label">Recorrido del incidente</span>
+                            <div class="journey-context__route">
+                                @for (var i = 0; i < _journey.Count; i++)
                                 {
-                                    var uid = u.Id;
-                                    <button type="button" class="chip @(_delegateUserIds.Contains(uid) ? "chip--active" : "")"
-                                            @onclick="() => ToggleDelegateUser(uid)">
-                                        @u.FullName
-                                    </button>
+                                    var idx = i;
+                                    var area = _journey[idx];
+                                    var isReturn = _journey.Take(idx).Any(x => x.AreaName == area.AreaName);
+
+                                    <span class="journey-context__area @(idx == _journeyStepIndex ? "journey-context__area--active" : "")"
+                                          @onclick="() => GoToJourneyStep(idx)"
+                                          title="Paso @(idx + 1): @area.AreaName">
+                                        @(idx + 1).@area.AreaName
+                                        @if (isReturn)
+                                        {
+                                            <span class="journey-return">Retorno</span>
+                                        }
+                                    </span>
+                                    @if (idx < _journey.Count - 1)
+                                    {
+                                        <Icon Name="chevron-right" />
+                                    }
                                 }
                             </div>
                         </div>
-                    }
 
-                    <div class="form-group">
-                        <textarea class="input" rows="2" placeholder="Motivo del reenvío" @bind="_delegateReason"></textarea>
+                        <div class="journey-context__block journey-context__status">
+                            <span class="journey-context__label">Estado actual</span>
+                            <span class="journey-stage-badge">@GetJourneyStageLabel()</span>
+                        </div>
                     </div>
 
-                    <button class="btn btn--secondary btn--sm" @onclick="DelegateAction"
-                            disabled="@(!_delegateAreaId.HasValue || _delegateUserIds.Count == 0)">
-                        Reenviar
-                    </button>
-                </div>
-            }
-
-            @if (_detail.Transfers.Count > 0)
-            {
-                <div class="widget card">
-                    <h4 class="widget__title"><Icon Name="arrow-right" />Historial de transferencias (@_detail.Transfers.Count)</h4>
-                    @foreach (var t in _detail.Transfers.OrderByDescending(t => t.TransferredAt))
-                    {
-                        <div class="activity-row">
-                            <div class="activity-row__icon" style="background:rgba(236,72,153,0.14); color:#ec4899;">
-                                <Icon Name="arrow-right" />
-                            </div>
-                            <div style="flex:1; min-width:0;">
-                                <p class="activity-row__text">@t.FromAreaName &rarr; <strong>@t.ToAreaName</strong> (@t.ToUserName)</p>
-                                <p class="activity-row__time">@t.Reason · @t.TransferredAt.ToRelativeLabel()</p>
+                    <div class="journey-summary">
+                        <Icon Name="info" Class="journey-summary__icon" />
+                        <p class="journey-summary__text">@BuildJourneySummary()</p>
+                    </div>
+                    <h4 class="widget_title journey-section journey-section--delay-1">Métricas</h4>
+                    <div class="journey-metrics">
+                        <div class="journey-metric journey-metric--work">
+                            <Icon Name="activity" />
+                            <div>
+                                <span class="journey-metric__value">@_journeyStep.ActiveHours.ToString("0.#") h</span>
+                                <span class="journey-metric__label">Trabajo efectivo</span>
                             </div>
                         </div>
+                        <div class="journey-metric journey-metric--wait">
+                            <Icon Name="clock" />
+                            <div>
+                                <span class="journey-metric__value">@_journeyStep.DeadHours.ToString("0.#") h</span>
+                                <span class="journey-metric__label">Tiempo en espera</span>
+                            </div>
+                        </div>
+                        <div class="journey-metric journey-metric--distribution">
+                            <Icon Name="pie-chart" />
+                            <div>
+                                <span class="journey-metric__value">@GetActivePercentage()%</span>
+                                <span class="journey-metric__label">Trabajo efectivo</span>
+                                <small>@GetWaitingPercentage()% espera</small>
+                            </div>
+                        </div>
+                    </div>
+
+                    <h4 class="widget_title journey-section journey-section--delay-2">
+                        <Icon Name="users" /> Personas del equipo
+                        <span class="journey-section__count">@_journeyStep.Users.Count</span>
+                    </h4>
+
+                    @{
+                        var responsibleIdsCompact = ResponsibleIds;
+                        var responsibleUsersCompact = _journeyStep.Users.Where(u => responsibleIdsCompact.Contains(u.Id)).ToList();
+                        var othersCompact = _journeyStep.Users.Where(u => !responsibleIdsCompact.Contains(u.Id)).ToList();
                     }
-                </div>
-            }
-        </div>
-    </div>
-}
 
-
-
-
-
-@{
-    var responsibleIds = ResponsibleIds;
-    var responsibleUsers = _journeyStep.Users.Where(u => responsibleIds.Contains(u.Id)).ToList();
-    var others = _journeyStep.Users.Where(u => !responsibleIds.Contains(u.Id)).ToList();
-}
-
-
-
-
-
-
-@if (responsibleUsers.Count > 0)
-{
-    @foreach (var resp in responsibleUsers)
-    {
-        <div class="activity-row activity-row--highlight">
-            <span class="avatar avatar--sm">@InitialsOf(resp.FullName)</span>
-            <div style="flex:1; min-width:0;">
-                <p class="activity-row__text">
-                    <span class="badge badge--brand"><Icon Name="star" /> Responsable actual</span>
-                    @if (!string.IsNullOrEmpty(GetResponsibleSince(resp.Id)))
+                    @if (_journeyStep.Users.Count == 0)
                     {
-                        <p class="journey-responsible-time">Desde @GetResponsibleSince(resp.Id)</p>
+                        <div class="journey-empty">
+                            <Icon Name="users" />
+                            <p class="journey-empty__title">Sin participantes registrados</p>
+                            <p class="journey-empty__desc">Esta área todavía no tiene usuarios asociados.</p>
+                        </div>
                     }
-                    <br />
-                    <strong>@resp.FullName</strong>
-                </p>
-                <p class="activity-row__time">@resp.Position</p>
-            </div>
-        </div>
-    }
-}
+                    else
+                    {
+                        <div class="person-row-list">
+                            @foreach (var resp in responsibleUsersCompact)
+                            {
+                                <div class="activity-row activity-row--highlight">
+                                    <span class="avatar avatar--sm">@InitialsOf(resp.FullName)</span>
+                                    <div style="flex:1; min-width:0;">
+                                        <p class="activity-row__text">
+                                            <span class="badge badge--brand">
+                                                <Icon Name="star" /> Responsable actual
+                                            </span>
+                                            @if (!string.IsNullOrEmpty(GetResponsibleSince(resp.Id)))
+                                            {
+                                                <p class="journey-responsible-time">Desde @GetResponsibleSince(resp.Id)</p>
+                                            }
+                                            <br />
+                                            <strong>@resp.FullName</strong>
+                                        </p>
+                                        <p class="activity-row__time">@resp.Position</p>
+                                    </div>
+                                </div>
+                            }
+                            @if (othersCompact.Count > 0)
+                            {
+                                <p class="journey-subheading">Otros participantes</p>
+                                @foreach (var u in othersCompact)
+                                {
+                                    <div class="activity-row">
+                                        <span class="avatar avatar--sm">@InitialsOf(u.FullName)</span>
+                                        <div style="flex:1; min-width:0;">
+                                            <p class="activity-row__text"><strong>@u.FullName</strong></p>
+                                            <p class="activity-row__time">@u.Position</p>
+                                        </div>
+                                    </div>
+                                }
+                            }
+                        </div>
+                    }
 
+                    <h4 class="widget_title journey-section journey-section--delay-3">
+                        <Icon Name="history" /> Qué hizo el equipo
+                        <span class="journey-section__count">@_journeyStep.Activity.Count</span>
+                    </h4>
 
+                    @if (_journeyStep.Activity.Count == 0)
+                    {
+                        <div class="journey-empty">
+                            <Icon Name="inbox" />
+                            <p class="journey-empty__title">Sin actividad registrada</p>
+                            <p class="journey-empty__desc">Nadie de este equipo generó actividad todavía.</p>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="journey-timeline">
+                            @foreach (var entry in _journeyStep.Activity)
+                            {
+                                var color = IncidentCssHelpers.ActivityColor(entry.Type);
+                                <div class="journey-timeline__item">
+                                    <div class="journey-timeline__dot" style="background:@ColorUtils.ToRgba(color, 0.14); color:@color;">
+                                        <Icon Name="@IncidentCssHelpers.ActivityIcon(entry.Type)" />
+                                    </div>
+                                    <div class="journey-timeline__content">
+                                        <p class="activity-row__text"><strong>@entry.ActorName</strong> @entry.Description</p>
+                                        <p class="activity-row__time">@entry.OccurredAt.ToRelativeLabel()</p>
+                                    </div>
+                                </div>
+                            }
+                        </div>
+                    }
 
+                    @if (_journeyStep.Transfers.Count > 0)
+                    {
+                        <h4 class="widget_title journey-section" style="margin-top:var(--space-5);">
+                            <Icon Name="arrow-right" /> Transferencias relacionadas
+                            <span class="journey-section__count">@_journeyStep.Transfers.Count</span>
+                        </h4>
+                        @foreach (var t in _journeyStep.Transfers)
+                        {
+                            <div class="journey-transfer-card">
+                                <p class="journey-transfer-card__title">Transferencia realizada</p>
+                                <div class="journey-transfer-card__grid">
+                                    <div><span class="journey-transfer-card__label">Origen</span><strong>@t.FromAreaName</strong></div>
+                                    <div><span class="journey-transfer-card__label">Destino</span><strong>@t.ToAreaName</strong></div>
+                                    <div><span class="journey-transfer-card__label">Responsable</span><strong>@t.ToUserName</strong></div>
+                                    <div><span class="journey-transfer-card__label">Fecha</span><strong>@t.TransferredAt.ToRelativeLabel()</strong></div>
+                                </div>
+                            </div>
+                        }
+                    }
 
-
-@{
-    var responsibleIds = ResponsibleIds;
-    var responsibleUsers = _journeyStep.Users.Where(u => responsibleIds.Contains(u.Id)).ToList();
-    var others = _journeyStep.Users.Where(u => !responsibleIds.Contains(u.Id)).ToList();
-}
-
-@foreach (var resp in responsibleUsers)
-{
-    <div class="activity-row activity-row--highlight">
-        <span class="avatar avatar--sm">@InitialsOf(resp.FullName)</span>
-        <div style="flex:1; min-width:0;">
-            <p class="activity-row__text">
-                <span class="badge badge--brand"><Icon Name="star" /> Responsable actual</span>
-                @if (!string.IsNullOrEmpty(GetResponsibleSince(resp.Id)))
-                {
-                    <p class="journey-responsible-time">Desde @GetResponsibleSince(resp.Id)</p>
+                    @if (_journeyStep.Comments.Count > 0)
+                    {
+                        <h4 class="widget_title journey-section" style="margin-top:var(--space-5);">
+                            <Icon Name="message-circle" /> Comentarios del equipo
+                            <span class="journey-section__count">@_journeyStep.Comments.Count</span>
+                        </h4>
+                        @foreach (var c in _journeyStep.Comments)
+                        {
+                            <div class="journey-comment">
+                                <span class="avatar avatar--sm">@InitialsOf(c.AuthorName)</span>
+                                <div style="flex:1; min-width:0;">
+                                    <p class="journey-comment__meta"><strong>@c.AuthorName</strong> &bull; @c.CreatedAt.ToRelativeLabel()</p>
+                                    <p class="journey-comment__text">@c.Text</p>
+                                </div>
+                            </div>
+                        }
+                    }
                 }
-                <br />
-                <strong>@resp.FullName</strong>
-            </p>
-            <p class="activity-row__time">@resp.Position</p>
+            </div>
+
+            <div class="journey-modal__controls">
+                <button class="btn btn--ghost btn--sm"
+                        @onclick="() => GoToJourneyStep(_journeyStepIndex - 1)"
+                        disabled="@(_journeyStepIndex == 0)">
+                    <Icon Name="chevron-left" />
+                    Anterior
+                </button>
+
+                <span class="journey-controls__position">
+                    @(_journeyStepIndex + 1) / @_journey.Count
+                </span>
+
+                <button class="btn btn--ghost btn--sm"
+                        @onclick="() => GoToJourneyStep(_journeyStepIndex + 1)"
+                        disabled="@(_journeyStepIndex == _journey.Count - 1)">
+                    Siguiente
+                    <Icon Name="chevron-right" />
+                </button>
+            </div>
         </div>
     </div>
 }
 
-@if (others.Count > 0)
+@if (_showConfirmModal)
 {
-    <p class="journey-subheading">Otros participantes</p>
-    @foreach (var u in others)
-    {
-        <div class="activity-row">
-            <span class="avatar avatar--sm">@InitialsOf(u.FullName)</span>
-            <div style="flex:1; min-width:0;">
-                <p class="activity-row__text"><strong>@u.FullName</strong></p>
-                <p class="activity-row__time">@u.Position</p>
+    <div class="modal-overlay">
+        <div class="modal">
+            <div class="modal__header">
+                <h3>@_confirmTitle</h3>
+            </div>
+            <div class="modal__body">
+                <p>@_confirmMessage</p>
+            </div>
+            <div class="modal__footer">
+                <button class="btn btn--ghost btn--sm" @onclick="CloseConfirmModal">No, cancelar</button>
+                <button class="btn @_confirmButtonClass btn--sm" @onclick="ConfirmPendingAction">@_confirmButtonText</button>
             </div>
         </div>
-    }
+    </div>
 }
-
-
-
-
-
-
-
-@using CorpWiki.Domain.Entities.Security
-@inject ISecurityService Security
 
 @code {
     [Parameter] public Guid Id { get; set; }
@@ -332,6 +1157,7 @@
     private List<(string Label, double Value, string Color)> _timeSegmentsChart = new();
     private List<(string Label, double Value, string Color)> _areaTimeSegments = new();
     private List<(string Label, string ValueLabel, string Color)> _areaTimeLegend = new();
+    private string? _selectedAreaName;
     private string _newComment = string.Empty;
     private IncidentStatus _newStatus;
     private bool _showConfirmModal = false;
@@ -385,7 +1211,11 @@
         if (_detail is null) return;
         _contentDraft = _detail.Content.Select(b => new ArticleContentBlock
         {
-            Id = b.Id, Type = b.Type, Order = b.Order, Text = b.Text, Meta = b.Meta,
+            Id = b.Id,
+            Type = b.Type,
+            Order = b.Order,
+            Text = b.Text,
+            Meta = b.Meta,
             Urls = new List<string>(b.Urls),
             TableRows = b.TableRows.Select(r => new List<string>(r)).ToList()
         }).ToList();
@@ -422,7 +1252,9 @@
         var area = _areas.FirstOrDefault(a => a.Name == areaName);
 
         return new AreaStoryStep(
-            areaName, area?.Color ?? "#3b82f6", area?.Icon ?? "layers-1",
+            areaName,
+            area?.Color ?? "#3b82f6",
+            area?.Icon ?? "layers-1",
             Math.Round(segs.Where(s => s.IsActiveWork).Sum(s => s.DurationHours), 1),
             Math.Round(segs.Where(s => !s.IsActiveWork).Sum(s => s.DurationHours), 1),
             _detail.Activity.Where(a => areaUserNames.Contains(a.ActorName)).OrderByDescending(a => a.OccurredAt).ToList(),
@@ -466,13 +1298,16 @@
 
         var isFirst = _journeyStepIndex == 0;
         var isLast = _journeyStepIndex == _journey.Count - 1;
+
         var incoming = _journeyStep.Transfers.FirstOrDefault(t => t.ToAreaName == _journeyStep.AreaName);
         var outgoing = _journeyStep.Transfers.FirstOrDefault(t => t.FromAreaName == _journeyStep.AreaName);
         var totalHours = _journeyStep.ActiveHours + _journeyStep.DeadHours;
 
         var opening = isFirst
             ? "El incidente inició su recorrido en esta área."
-            : incoming is not null ? $"Esta área recibió el incidente desde {incoming.FromAreaName}." : "Esta área participó en el recorrido del incidente.";
+            : incoming is not null
+                ? $"Esta área recibió el incidente desde {incoming.FromAreaName}."
+                : "Esta área participó en el recorrido del incidente.";
 
         var duration = totalHours > 0
             ? $" Permaneció {totalHours:0.#} horas en esta etapa, con {_journeyStep.ActiveHours:0.#} horas de trabajo efectivo."
@@ -480,7 +1315,9 @@
 
         var transfer = outgoing is not null
             ? $" Posteriormente fue transferido hacia {outgoing.ToAreaName}."
-            : isLast ? " Actualmente es el área responsable del seguimiento." : string.Empty;
+            : isLast
+                ? " Actualmente es el área responsable del seguimiento."
+                : string.Empty;
 
         var people = _journeyStep.Users.Count switch
         {
@@ -495,6 +1332,7 @@
     private string GetJourneyStageLabel()
     {
         if (_journey.Count == 0) return string.Empty;
+
         return _journeyStepIndex switch
         {
             0 => "Inicio del recorrido",
@@ -508,6 +1346,7 @@
         if (_journey.Count == 0) return;
         _journeyStepIndex = Math.Clamp(startIndex, 0, _journey.Count - 1);
         _journeyStep = await BuildAreaStoryAsync(_journey[_journeyStepIndex].AreaName);
+        _selectedAreaName = _journeyStep.AreaName;
         _showJourneyModal = true;
         await JSRuntime.InvokeVoidAsync("window.scrollTo", 0, 0);
         await JSRuntime.InvokeVoidAsync("document.body.classList.add", "modal-open");
@@ -516,9 +1355,11 @@
     private async Task GoToJourneyStep(int index)
     {
         if (index < 0 || index >= _journey.Count) return;
+
         _journeyDirection = index > _journeyStepIndex ? "next" : "prev";
         _journeyStepIndex = index;
         _journeyStep = await BuildAreaStoryAsync(_journey[index].AreaName);
+        _selectedAreaName = _journeyStep.AreaName;
     }
 
     private async Task CloseJourneyModal()
@@ -546,7 +1387,8 @@
         if (_detail is null) return;
 
         _newStatus = _detail.Status;
-        _currentAreaUsers = (await Incidents.GetUsersByAreaAsync(_detail.CurrentAreaId)).OrderBy(u => u.FullName).ToList();
+        _currentAreaUsers = (await Incidents.GetUsersByAreaAsync(_detail.CurrentAreaId))
+            .OrderBy(u => u.FullName).ToList();
 
         _breadcrumb = new List<BreadcrumbItem>
         {
@@ -755,7 +1597,3 @@
         _pendingAction = null;
     }
 }
-
-
-
-
