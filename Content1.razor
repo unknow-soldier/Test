@@ -1,367 +1,248 @@
-using System.Text.Json;
-using CorpWiki.Domain.Entities;
-using CorpWiki.Domain.Entities.Incidents;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.ChangeTracking;
-using Microsoft.EntityFrameworkCore.Metadata.Builders;
+using Microsoft.EntityFrameworkCore.Migrations;
 
-namespace CorpWiki.Infrastructure.Persistence.Configurations.Incidents;
+#nullable disable
 
-public class IncidentConfiguration : IEntityTypeConfiguration<Incident>
+namespace CorpWiki.Infrastructure.Persistence.Migrations
 {
-    public void Configure(EntityTypeBuilder<Incident> builder)
+    public partial class ResponsablesMultiplesYEstadosReducidos : Migration
     {
-        builder.ToTable("Incidents");
-        builder.HasKey(i => i.Id);
+        protected override void Up(MigrationBuilder migrationBuilder)
+        {
+            // =========================================================================
+            // 1. Agregar AreaId a IncidentParticipants (nullable primero, para poder
+            //    rellenar filas ya existentes antes de exigir el NOT NULL).
+            // =========================================================================
+            migrationBuilder.AddColumn<Guid>(
+                name: "AreaId",
+                table: "IncidentParticipants",
+                type: "uniqueidentifier",
+                nullable: true);
 
-        builder.Property(i => i.Code).HasMaxLength(20).IsRequired();
-        builder.Property(i => i.Title).HasMaxLength(200).IsRequired();
-        builder.Property(i => i.Description).HasColumnType("nvarchar(max)");
+            migrationBuilder.Sql(@"
+                UPDATE p
+                SET p.AreaId = i.CurrentAreaId
+                FROM IncidentParticipants p
+                INNER JOIN Incidents i ON i.Id = p.IncidentId
+                WHERE p.AreaId IS NULL;
+            ");
 
-        builder.Property(i => i.Status)
-            .HasConversion<string>()
-            .HasMaxLength(30);
+            migrationBuilder.AlterColumn<Guid>(
+                name: "AreaId",
+                table: "IncidentParticipants",
+                type: "uniqueidentifier",
+                nullable: false,
+                oldClrType: typeof(Guid),
+                oldType: "uniqueidentifier",
+                oldNullable: true);
 
-        builder.Property(i => i.Priority)
-            .HasConversion<string>()
-            .HasMaxLength(20);
+            migrationBuilder.CreateIndex(
+                name: "IX_IncidentParticipants_AreaId",
+                table: "IncidentParticipants",
+                column: "AreaId");
 
-        builder.Property(i => i.Content)
-            .HasColumnName("ContentJson")
-            .HasColumnType("nvarchar(max)")
-            .HasConversion(
-                v => JsonSerializer.Serialize(v ?? new List<ArticleContentBlock>(), (JsonSerializerOptions?)null),
-                v => JsonSerializer.Deserialize<List<ArticleContentBlock>>(v, (JsonSerializerOptions?)null) ?? new List<ArticleContentBlock>())
-            .Metadata.SetValueComparer(new ValueComparer<List<ArticleContentBlock>>(
-                (a, b) => JsonSerializer.Serialize(a, (JsonSerializerOptions?)null) == JsonSerializer.Serialize(b, (JsonSerializerOptions?)null),
-                c => JsonSerializer.Serialize(c, (JsonSerializerOptions?)null).GetHashCode(),
-                c => JsonSerializer.Deserialize<List<ArticleContentBlock>>(JsonSerializer.Serialize(c, (JsonSerializerOptions?)null), (JsonSerializerOptions?)null)!));
+            migrationBuilder.AddForeignKey(
+                name: "FK_IncidentParticipants_Areas",
+                table: "IncidentParticipants",
+                column: "AreaId",
+                principalTable: "Areas",
+                principalColumn: "Id",
+                onDelete: ReferentialAction.Restrict);
 
-        builder.HasOne<Area>()
-            .WithMany()
-            .HasForeignKey(i => i.OriginAreaId)
-            .HasConstraintName("FK_Incidents_Areas_Origin")
-            .OnDelete(DeleteBehavior.Restrict);
+            // =========================================================================
+            // 2. Migrar el responsable único actual (CurrentResponsibleId) a la tabla
+            //    de participantes ANTES de borrar la columna, para no perder el dato.
+            //    Usa upsert: si el usuario ya tenía una fila activa (p.ej. como
+            //    Colaborador), se la sube a Responsable en vez de duplicarla — el
+            //    índice único (IncidentId+SecurityUserId con RemovedAt NULL) solo
+            //    permite una fila activa por usuario por incidencia.
+            // =========================================================================
+            migrationBuilder.Sql(@"
+                UPDATE p
+                SET p.Role = 'Responsable',
+                    p.AreaId = i.CurrentAreaId
+                FROM IncidentParticipants p
+                INNER JOIN Incidents i ON i.Id = p.IncidentId
+                WHERE i.CurrentResponsibleId IS NOT NULL
+                  AND p.SecurityUserId = i.CurrentResponsibleId
+                  AND p.RemovedAt IS NULL
+                  AND p.Role <> 'Responsable';
+            ");
 
-        builder.HasOne<Area>()
-            .WithMany()
-            .HasForeignKey(i => i.CurrentAreaId)
-            .HasConstraintName("FK_Incidents_Areas_Current")
-            .OnDelete(DeleteBehavior.Restrict);
+            migrationBuilder.Sql(@"
+                INSERT INTO IncidentParticipants (Id, IncidentId, SecurityUserId, AreaId, Role, AssignedAt, RemovedAt)
+                SELECT NEWID(), i.Id, i.CurrentResponsibleId, i.CurrentAreaId, 'Responsable', i.UpdatedAt, NULL
+                FROM Incidents i
+                WHERE i.CurrentResponsibleId IS NOT NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM IncidentParticipants p
+                      WHERE p.IncidentId = i.Id
+                        AND p.SecurityUserId = i.CurrentResponsibleId
+                        AND p.RemovedAt IS NULL
+                  );
+            ");
 
-        builder.HasOne(i => i.CreatedByUser)
-            .WithMany()
-            .HasForeignKey(i => i.CreatedByUserId)
-            .HasConstraintName("FK_Incidents_SecurityUsers_CreatedBy")
-            .OnDelete(DeleteBehavior.Restrict);
+            // =========================================================================
+            // 3. Quitar el responsable único: FK, índice y columna.
+            // =========================================================================
+            migrationBuilder.DropForeignKey(
+                name: "FK_Incidents_SecurityUsers_CurrentResponsibleId",
+                table: "Incidents");
 
-        builder.HasMany(i => i.Participants)
-            .WithOne(p => p.Incident)
-            .HasForeignKey(p => p.IncidentId)
-            .OnDelete(DeleteBehavior.Cascade);
+            migrationBuilder.DropIndex(
+                name: "IX_Incidents_CurrentResponsibleId",
+                table: "Incidents");
+
+            migrationBuilder.DropColumn(
+                name: "CurrentResponsibleId",
+                table: "Incidents");
+
+            // =========================================================================
+            // 4. Convertir Status de int a nvarchar(30), remapeando los estados viejos
+            //    (8 valores) a los 4 nuevos. Nueva/Asignada/EnAnalisis/PendienteOtraArea
+            //    colapsan todos en "EnDesarrollo".
+            // =========================================================================
+            migrationBuilder.AddColumn<string>(
+                name: "StatusText",
+                table: "Incidents",
+                type: "nvarchar(30)",
+                maxLength: 30,
+                nullable: true);
+
+            migrationBuilder.Sql(@"
+                UPDATE Incidents
+                SET StatusText = CASE Status
+                    WHEN 0 THEN 'EnDesarrollo'   -- Nueva
+                    WHEN 1 THEN 'EnDesarrollo'   -- Asignada
+                    WHEN 2 THEN 'EnDesarrollo'   -- EnAnalisis
+                    WHEN 3 THEN 'EnDesarrollo'   -- EnDesarrollo
+                    WHEN 4 THEN 'EnDesarrollo'   -- PendienteOtraArea (eliminado)
+                    WHEN 5 THEN 'Resuelta'
+                    WHEN 6 THEN 'Cerrada'
+                    WHEN 7 THEN 'Reactivada'
+                    ELSE 'EnDesarrollo'
+                END;
+            ");
+
+            migrationBuilder.DropColumn(name: "Status", table: "Incidents");
+
+            migrationBuilder.RenameColumn(
+                name: "StatusText",
+                table: "Incidents",
+                newName: "Status");
+
+            migrationBuilder.AlterColumn<string>(
+                name: "Status",
+                table: "Incidents",
+                type: "nvarchar(30)",
+                maxLength: 30,
+                nullable: false,
+                oldClrType: typeof(string),
+                oldType: "nvarchar(30)",
+                oldNullable: true);
+
+            // =========================================================================
+            // 5. Convertir Priority de int a nvarchar(20). El orden de valores no
+            //    cambió, solo el tipo de almacenamiento.
+            // =========================================================================
+            migrationBuilder.AddColumn<string>(
+                name: "PriorityText",
+                table: "Incidents",
+                type: "nvarchar(20)",
+                maxLength: 20,
+                nullable: true);
+
+            migrationBuilder.Sql(@"
+                UPDATE Incidents
+                SET PriorityText = CASE Priority
+                    WHEN 0 THEN 'Baja'
+                    WHEN 1 THEN 'Media'
+                    WHEN 2 THEN 'Alta'
+                    WHEN 3 THEN 'Critica'
+                    ELSE 'Media'
+                END;
+            ");
+
+            migrationBuilder.DropColumn(name: "Priority", table: "Incidents");
+
+            migrationBuilder.RenameColumn(
+                name: "PriorityText",
+                table: "Incidents",
+                newName: "Priority");
+
+            migrationBuilder.AlterColumn<string>(
+                name: "Priority",
+                table: "Incidents",
+                type: "nvarchar(20)",
+                maxLength: 20,
+                nullable: false,
+                oldClrType: typeof(string),
+                oldType: "nvarchar(20)",
+                oldNullable: true);
+        }
+
+        protected override void Down(MigrationBuilder migrationBuilder)
+        {
+            // --- Priority: string -> int ---
+            migrationBuilder.AddColumn<int>(
+                name: "PriorityInt", table: "Incidents", type: "int", nullable: true);
+
+            migrationBuilder.Sql(@"
+                UPDATE Incidents
+                SET PriorityInt = CASE Priority
+                    WHEN 'Baja' THEN 0
+                    WHEN 'Media' THEN 1
+                    WHEN 'Alta' THEN 2
+                    WHEN 'Critica' THEN 3
+                    ELSE 1
+                END;
+            ");
+
+            migrationBuilder.DropColumn(name: "Priority", table: "Incidents");
+            migrationBuilder.RenameColumn(name: "PriorityInt", table: "Incidents", newName: "Priority");
+            migrationBuilder.AlterColumn<int>(
+                name: "Priority", table: "Incidents", type: "int", nullable: false,
+                oldClrType: typeof(string), oldType: "nvarchar(20)", oldNullable: true);
+
+            // --- Status: string -> int (con pérdida de granularidad: todo lo que era
+            //     Nueva/Asignada/EnAnalisis/PendienteOtraArea vuelve como EnDesarrollo=3,
+            //     porque esa distinción ya no existe en el modelo actual) ---
+            migrationBuilder.AddColumn<int>(
+                name: "StatusInt", table: "Incidents", type: "int", nullable: true);
+
+            migrationBuilder.Sql(@"
+                UPDATE Incidents
+                SET StatusInt = CASE Status
+                    WHEN 'EnDesarrollo' THEN 3
+                    WHEN 'Resuelta' THEN 5
+                    WHEN 'Cerrada' THEN 6
+                    WHEN 'Reactivada' THEN 7
+                    ELSE 3
+                END;
+            ");
+
+            migrationBuilder.DropColumn(name: "Status", table: "Incidents");
+            migrationBuilder.RenameColumn(name: "StatusInt", table: "Incidents", newName: "Status");
+            migrationBuilder.AlterColumn<int>(
+                name: "Status", table: "Incidents", type: "int", nullable: false,
+                oldClrType: typeof(string), oldType: "nvarchar(30)", oldNullable: true);
+
+            // --- Restaurar CurrentResponsibleId (vacío: no se puede reconstruir de
+            //     forma confiable "el" responsable único a partir de una lista de N) ---
+            migrationBuilder.AddColumn<Guid>(
+                name: "CurrentResponsibleId", table: "Incidents", type: "uniqueidentifier", nullable: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_Incidents_CurrentResponsibleId", table: "Incidents", column: "CurrentResponsibleId");
+
+            migrationBuilder.AddForeignKey(
+                name: "FK_Incidents_SecurityUsers_CurrentResponsibleId",
+                table: "Incidents", column: "CurrentResponsibleId",
+                principalTable: "security_users", principalColumn: "Id",
+                onDelete: ReferentialAction.Restrict);
+
+            migrationBuilder.DropForeignKey(name: "FK_IncidentParticipants_Areas", table: "IncidentParticipants");
+            migrationBuilder.DropIndex(name: "IX_IncidentParticipants_AreaId", table: "IncidentParticipants");
+            migrationBuilder.DropColumn(name: "AreaId", table: "IncidentParticipants");
+        }
     }
 }
-
-
-
-
-
-
-using CorpWiki.Domain.Entities.Incidents;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Metadata.Builders;
-
-namespace CorpWiki.Infrastructure.Persistence.Configurations.Incidents;
-
-public class IncidentParticipantConfiguration : IEntityTypeConfiguration<IncidentParticipant>
-{
-    public void Configure(EntityTypeBuilder<IncidentParticipant> builder)
-    {
-        builder.ToTable("IncidentParticipants");
-        builder.HasKey(p => p.Id);
-
-        builder.HasOne(p => p.Incident)
-            .WithMany(i => i.Participants)
-            .HasForeignKey(p => p.IncidentId)
-            .HasConstraintName("FK_IncidentParticipants_Incidents")
-            .OnDelete(DeleteBehavior.Cascade);
-
-        builder.HasOne(p => p.SecurityUser)
-            .WithMany(u => u.IncidentParticipations)
-            .HasForeignKey(p => p.SecurityUserId)
-            .HasConstraintName("FK_IncidentParticipants_SecurityUsers")
-            .OnDelete(DeleteBehavior.Restrict);
-
-        builder.HasOne(p => p.Area)
-            .WithMany()
-            .HasForeignKey(p => p.AreaId)
-            .HasConstraintName("FK_IncidentParticipants_Areas")
-            .OnDelete(DeleteBehavior.Restrict);
-
-        builder.Property(p => p.Role)
-            .HasConversion<string>()
-            .HasMaxLength(30);
-
-        builder.HasIndex(p => new { p.IncidentId, p.SecurityUserId })
-            .HasFilter("[RemovedAt] IS NULL")
-            .IsUnique();
-    }
-}
-
-
-
-
-
-
-using CorpWiki.Domain.Entities.Incidents;
-using CorpWiki.Domain.Entities.Security;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Metadata.Builders;
-
-namespace CorpWiki.Infrastructure.Persistence.Configurations.Incidents;
-
-public class IncidentCommentConfiguration : IEntityTypeConfiguration<IncidentComment>
-{
-    public void Configure(EntityTypeBuilder<IncidentComment> builder)
-    {
-        builder.ToTable("IncidentComments");
-        builder.HasKey(c => c.Id);
-        builder.Property(c => c.Text).HasColumnType("nvarchar(max)");
-
-        builder.HasOne<Incident>()
-            .WithMany()
-            .HasForeignKey(c => c.IncidentId)
-            .HasConstraintName("FK_IncidentComments_Incidents")
-            .OnDelete(DeleteBehavior.Cascade);
-
-        builder.HasOne<SecurityUser>()
-            .WithMany()
-            .HasForeignKey(c => c.AuthorUserId)
-            .HasConstraintName("FK_IncidentComments_SecurityUsers_Author")
-            .OnDelete(DeleteBehavior.Restrict);
-    }
-}
-
-
-
-
-
-
-using CorpWiki.Domain.Entities.Incidents;
-using CorpWiki.Domain.Entities.Security;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Metadata.Builders;
-
-namespace CorpWiki.Infrastructure.Persistence.Configurations.Incidents;
-
-public class IncidentAttachmentConfiguration : IEntityTypeConfiguration<IncidentAttachment>
-{
-    public void Configure(EntityTypeBuilder<IncidentAttachment> builder)
-    {
-        builder.ToTable("IncidentAttachments");
-        builder.HasKey(a => a.Id);
-
-        builder.Property(a => a.FileName).HasMaxLength(260).IsRequired();
-        builder.Property(a => a.FileType).HasMaxLength(20).IsRequired();
-        builder.Property(a => a.SizeLabel).HasMaxLength(20);
-
-        builder.HasOne<Incident>()
-            .WithMany()
-            .HasForeignKey(a => a.IncidentId)
-            .HasConstraintName("FK_IncidentAttachments_Incidents")
-            .OnDelete(DeleteBehavior.Cascade);
-
-        builder.HasOne<SecurityUser>()
-            .WithMany()
-            .HasForeignKey(a => a.UploadedByUserId)
-            .HasConstraintName("FK_IncidentAttachments_SecurityUsers_UploadedBy")
-            .OnDelete(DeleteBehavior.Restrict);
-    }
-}
-
-
-
-
-
-using CorpWiki.Domain.Entities.Incidents;
-using CorpWiki.Domain.Entities.Security;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Metadata.Builders;
-
-namespace CorpWiki.Infrastructure.Persistence.Configurations.Incidents;
-
-public class IncidentTransferConfiguration : IEntityTypeConfiguration<IncidentTransfer>
-{
-    public void Configure(EntityTypeBuilder<IncidentTransfer> builder)
-    {
-        builder.ToTable("IncidentTransfers");
-        builder.HasKey(t => t.Id);
-        builder.Property(t => t.Reason).HasMaxLength(500);
-
-        builder.HasOne<Incident>()
-            .WithMany()
-            .HasForeignKey(t => t.IncidentId)
-            .HasConstraintName("FK_IncidentTransfers_Incidents")
-            .OnDelete(DeleteBehavior.Cascade);
-
-        builder.HasOne<SecurityUser>()
-            .WithMany()
-            .HasForeignKey(t => t.FromUserId)
-            .HasConstraintName("FK_IncidentTransfers_SecurityUsers_FromUser")
-            .OnDelete(DeleteBehavior.Restrict);
-
-        builder.HasOne<SecurityUser>()
-            .WithMany()
-            .HasForeignKey(t => t.ToUserId)
-            .HasConstraintName("FK_IncidentTransfers_SecurityUsers_ToUser")
-            .OnDelete(DeleteBehavior.Restrict);
-
-        builder.HasOne<Area>()
-            .WithMany()
-            .HasForeignKey(t => t.FromAreaId)
-            .HasConstraintName("FK_IncidentTransfers_Areas_FromArea")
-            .OnDelete(DeleteBehavior.Restrict);
-
-        builder.HasOne<Area>()
-            .WithMany()
-            .HasForeignKey(t => t.ToAreaId)
-            .HasConstraintName("FK_IncidentTransfers_Areas_ToArea")
-            .OnDelete(DeleteBehavior.Restrict);
-    }
-}
-
-
-
-
-
-using CorpWiki.Domain.Entities.Incidents;
-using CorpWiki.Domain.Entities.Security;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Metadata.Builders;
-
-namespace CorpWiki.Infrastructure.Persistence.Configurations.Incidents;
-
-public class IncidentActivityEntryConfiguration : IEntityTypeConfiguration<IncidentActivityEntry>
-{
-    public void Configure(EntityTypeBuilder<IncidentActivityEntry> builder)
-    {
-        builder.ToTable("IncidentActivityEntries");
-        builder.HasKey(e => e.Id);
-        builder.Property(e => e.Description).HasMaxLength(1000);
-
-        builder.Property(e => e.Type)
-            .HasConversion<string>()
-            .HasMaxLength(30);
-
-        builder.HasOne<Incident>()
-            .WithMany()
-            .HasForeignKey(e => e.IncidentId)
-            .HasConstraintName("FK_IncidentActivityEntries_Incidents")
-            .OnDelete(DeleteBehavior.Cascade);
-
-        builder.HasOne<SecurityUser>()
-            .WithMany()
-            .HasForeignKey(e => e.ActorUserId)
-            .HasConstraintName("FK_IncidentActivityEntries_SecurityUsers_Actor")
-            .OnDelete(DeleteBehavior.Restrict);
-    }
-}
-
-
-
-
-
-using CorpWiki.Domain.Entities.Incidents;
-using CorpWiki.Domain.Entities.Security;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Metadata.Builders;
-
-namespace CorpWiki.Infrastructure.Persistence.Configurations.Incidents;
-
-public class IncidentTimeSegmentConfiguration : IEntityTypeConfiguration<IncidentTimeSegment>
-{
-    public void Configure(EntityTypeBuilder<IncidentTimeSegment> builder)
-    {
-        builder.ToTable("IncidentTimeSegments");
-        builder.HasKey(s => s.Id);
-        builder.Ignore(s => s.Duration);
-
-        builder.HasOne<Incident>()
-            .WithMany()
-            .HasForeignKey(s => s.IncidentId)
-            .HasConstraintName("FK_IncidentTimeSegments_Incidents")
-            .OnDelete(DeleteBehavior.Cascade);
-
-        builder.HasOne<Area>()
-            .WithMany()
-            .HasForeignKey(s => s.AreaId)
-            .HasConstraintName("FK_IncidentTimeSegments_Areas")
-            .OnDelete(DeleteBehavior.Restrict);
-
-        builder.HasOne<SecurityUser>()
-            .WithMany()
-            .HasForeignKey(s => s.UserId)
-            .HasConstraintName("FK_IncidentTimeSegments_SecurityUsers")
-            .IsRequired(false)
-            .OnDelete(DeleteBehavior.Restrict);
-
-        builder.HasIndex(s => new { s.IncidentId, s.StartedAt });
-    }
-}
-
-
-
-
-
-using CorpWiki.Domain.Entities;
-using CorpWiki.Domain.Entities.Incidents;
-using CorpWiki.Domain.Entities.Security;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Metadata.Builders;
-
-namespace CorpWiki.Infrastructure.Persistence.Configurations.Incidents;
-
-public class IncidentArticleLinkConfiguration : IEntityTypeConfiguration<IncidentArticleLink>
-{
-    public void Configure(EntityTypeBuilder<IncidentArticleLink> builder)
-    {
-        builder.ToTable("IncidentArticleLinks");
-        builder.HasKey(l => l.Id);
-
-        builder.HasOne(l => l.Incident)
-            .WithMany(i => i.RelatedArticles)
-            .HasForeignKey(l => l.IncidentId)
-            .HasConstraintName("FK_IncidentArticleLinks_Incidents")
-            .OnDelete(DeleteBehavior.Cascade);
-
-        builder.HasOne(l => l.Article)
-            .WithMany()
-            .HasForeignKey(l => l.ArticleId)
-            .HasConstraintName("FK_IncidentArticleLinks_Articles")
-            .OnDelete(DeleteBehavior.Restrict);
-
-        builder.HasOne<SecurityUser>()
-            .WithMany()
-            .HasForeignKey(l => l.LinkedByUserId)
-            .HasConstraintName("FK_IncidentArticleLinks_SecurityUsers")
-            .OnDelete(DeleteBehavior.Restrict);
-
-        builder.HasIndex(l => new { l.IncidentId, l.ArticleId }).IsUnique();
-    }
-}
-
-
-
-
-
-
-
-public DbSet<Incident> Incidents => Set<Incident>();
-public DbSet<IncidentParticipant> IncidentParticipants => Set<IncidentParticipant>();
-public DbSet<IncidentComment> IncidentComments => Set<IncidentComment>();
-public DbSet<IncidentAttachment> IncidentAttachments => Set<IncidentAttachment>();
-public DbSet<IncidentTransfer> IncidentTransfers => Set<IncidentTransfer>();
-public DbSet<IncidentActivityEntry> IncidentActivityEntries => Set<IncidentActivityEntry>();
-public DbSet<IncidentTimeSegment> IncidentTimeSegments => Set<IncidentTimeSegment>();
-public DbSet<IncidentArticleLink> IncidentArticleLinks => Set<IncidentArticleLink>();
-public DbSet<Area> Areas => Set<Area>();
