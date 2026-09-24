@@ -1,50 +1,273 @@
-if (initialResponsibleUserId.HasValue && initialResponsibleUserId.Value == createdByUserId)
+using Microsoft.EntityFrameworkCore.Migrations;
+
+#nullable disable
+
+namespace CorpWiki.Infrastructure.Persistence.Migrations
 {
-    // Es la misma persona: sube su única fila a Responsable, no agregues otra.
-    var creatorRow = await _db.IncidentParticipants
-        .FirstOrDefaultAsync(p => p.IncidentId == incident.Id && p.SecurityUserId == createdByUserId && p.RemovedAt == null);
-    if (creatorRow != null) creatorRow.Role = IncidentParticipantRole.Responsable;
-}
-else if (initialResponsibleUserId.HasValue)
-{
-    // ... (el bloque que ya tenías, sin cambios)
-}
-
-
-
-
-
-
-var existingRow = await _db.IncidentParticipants
-    .FirstOrDefaultAsync(p => p.IncidentId == incidentId && p.SecurityUserId == userId && p.RemovedAt == null);
-
-if (existingRow != null)
-{
-    existingRow.Role = IncidentParticipantRole.Responsable;
-    existingRow.AreaId = incident.CurrentAreaId;
-}
-else
-{
-    _db.IncidentParticipants.Add(new IncidentParticipant { /* ... como ya tenías ... */ });
-}
-
-
-
-
-
-
-foreach (var u in newUsers)
-{
-    var existingRow = await _db.IncidentParticipants
-        .FirstOrDefaultAsync(p => p.IncidentId == incidentId && p.SecurityUserId == u.Id && p.RemovedAt == null);
-
-    if (existingRow != null)
+    public partial class ResponsableMultipleYEstadosReducidos : Migration
     {
-        existingRow.Role = IncidentParticipantRole.Responsable;
-        existingRow.AreaId = toAreaId;
-    }
-    else
-    {
-        _db.IncidentParticipants.Add(new IncidentParticipant { /* ... como ya tenías ... */ });
+        protected override void Up(MigrationBuilder migrationBuilder)
+        {
+            // =========================================================================
+            // 1. AreaId en IncidentParticipants (idempotente: solo agrega si no existe)
+            // =========================================================================
+            migrationBuilder.Sql(@"
+                IF NOT EXISTS (
+                    SELECT 1 FROM sys.columns
+                    WHERE object_id = OBJECT_ID('dbo.IncidentParticipants') AND name = 'AreaId'
+                )
+                BEGIN
+                    ALTER TABLE dbo.IncidentParticipants ADD AreaId uniqueidentifier NULL;
+                END
+            ");
+
+            migrationBuilder.Sql(@"
+                UPDATE p
+                SET p.AreaId = i.CurrentAreaId
+                FROM IncidentParticipants p
+                INNER JOIN Incidents i ON i.Id = p.IncidentId
+                WHERE p.AreaId IS NULL;
+            ");
+
+            migrationBuilder.Sql(@"
+                IF EXISTS (
+                    SELECT 1 FROM sys.columns
+                    WHERE object_id = OBJECT_ID('dbo.IncidentParticipants') AND name = 'AreaId' AND is_nullable = 1
+                )
+                BEGIN
+                    ALTER TABLE dbo.IncidentParticipants ALTER COLUMN AreaId uniqueidentifier NOT NULL;
+                END
+            ");
+
+            migrationBuilder.Sql(@"
+                IF NOT EXISTS (
+                    SELECT 1 FROM sys.indexes
+                    WHERE name = 'IX_IncidentParticipants_AreaId' AND object_id = OBJECT_ID('dbo.IncidentParticipants')
+                )
+                BEGIN
+                    CREATE INDEX IX_IncidentParticipants_AreaId ON dbo.IncidentParticipants(AreaId);
+                END
+            ");
+
+            migrationBuilder.Sql(@"
+                IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_IncidentParticipants_Areas')
+                BEGIN
+                    ALTER TABLE dbo.IncidentParticipants
+                    ADD CONSTRAINT FK_IncidentParticipants_Areas FOREIGN KEY (AreaId) REFERENCES dbo.Areas(Id);
+                END
+            ");
+
+            // =========================================================================
+            // 2. Migrar CurrentResponsibleId -> IncidentParticipants (solo si la
+            //    columna todavía existe; si ya se corrió antes, se salta entero).
+            // =========================================================================
+            migrationBuilder.Sql(@"
+                IF EXISTS (
+                    SELECT 1 FROM sys.columns
+                    WHERE object_id = OBJECT_ID('dbo.Incidents') AND name = 'CurrentResponsibleId'
+                )
+                BEGIN
+                    UPDATE p
+                    SET p.Role = 'Responsable',
+                        p.AreaId = i.CurrentAreaId
+                    FROM IncidentParticipants p
+                    INNER JOIN Incidents i ON i.Id = p.IncidentId
+                    WHERE i.CurrentResponsibleId IS NOT NULL
+                      AND p.SecurityUserId = i.CurrentResponsibleId
+                      AND p.RemovedAt IS NULL
+                      AND p.Role <> 'Responsable';
+
+                    INSERT INTO IncidentParticipants (Id, IncidentId, SecurityUserId, AreaId, Role, AssignedAt, RemovedAt)
+                    SELECT NEWID(), i.Id, i.CurrentResponsibleId, i.CurrentAreaId, 'Responsable', i.UpdatedAt, NULL
+                    FROM Incidents i
+                    WHERE i.CurrentResponsibleId IS NOT NULL
+                      AND NOT EXISTS (
+                          SELECT 1 FROM IncidentParticipants p
+                          WHERE p.IncidentId = i.Id
+                            AND p.SecurityUserId = i.CurrentResponsibleId
+                            AND p.RemovedAt IS NULL
+                      );
+                END
+            ");
+
+            // =========================================================================
+            // 3. Quitar CurrentResponsibleId: busca el nombre REAL de la FK/índice en
+            //    sys.foreign_keys / sys.indexes en vez de asumirlo, y los borra por
+            //    nombre dinámico. Esto resuelve el problema de raíz: no importa cómo
+            //    se llame la constraint real, la encuentra sola.
+            // =========================================================================
+            migrationBuilder.Sql(@"
+                IF EXISTS (
+                    SELECT 1 FROM sys.columns
+                    WHERE object_id = OBJECT_ID('dbo.Incidents') AND name = 'CurrentResponsibleId'
+                )
+                BEGIN
+                    DECLARE @fkName NVARCHAR(200);
+                    SELECT @fkName = fk.name
+                    FROM sys.foreign_keys fk
+                    INNER JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id
+                    INNER JOIN sys.columns c ON c.object_id = fkc.parent_object_id AND c.column_id = fkc.parent_column_id
+                    WHERE fk.parent_object_id = OBJECT_ID('dbo.Incidents') AND c.name = 'CurrentResponsibleId';
+
+                    IF @fkName IS NOT NULL
+                    BEGIN
+                        DECLARE @sqlFk NVARCHAR(400) = N'ALTER TABLE dbo.Incidents DROP CONSTRAINT [' + @fkName + N'];';
+                        EXEC sp_executesql @sqlFk;
+                    END
+
+                    DECLARE @ixName NVARCHAR(200);
+                    SELECT @ixName = i.name
+                    FROM sys.indexes i
+                    INNER JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id
+                    INNER JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+                    WHERE i.object_id = OBJECT_ID('dbo.Incidents')
+                      AND c.name = 'CurrentResponsibleId'
+                      AND i.is_primary_key = 0
+                      AND i.type > 0;
+
+                    IF @ixName IS NOT NULL
+                    BEGIN
+                        DECLARE @sqlIx NVARCHAR(400) = N'DROP INDEX [' + @ixName + N'] ON dbo.Incidents;';
+                        EXEC sp_executesql @sqlIx;
+                    END
+
+                    ALTER TABLE dbo.Incidents DROP COLUMN CurrentResponsibleId;
+                END
+            ");
+
+            // =========================================================================
+            // 4. Status: int -> nvarchar(30), remapeando 8 valores viejos a 4 nuevos.
+            //    Se salta entero si ya se convirtió antes (chequea el tipo real).
+            // =========================================================================
+            migrationBuilder.Sql(@"
+                IF EXISTS (
+                    SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                    WHERE TABLE_NAME = 'Incidents' AND COLUMN_NAME = 'Status' AND DATA_TYPE = 'int'
+                )
+                BEGIN
+                    ALTER TABLE dbo.Incidents ADD StatusText nvarchar(30) NULL;
+
+                    UPDATE Incidents
+                    SET StatusText = CASE Status
+                        WHEN 0 THEN 'EnDesarrollo'
+                        WHEN 1 THEN 'EnDesarrollo'
+                        WHEN 2 THEN 'EnDesarrollo'
+                        WHEN 3 THEN 'EnDesarrollo'
+                        WHEN 4 THEN 'EnDesarrollo'
+                        WHEN 5 THEN 'Resuelta'
+                        WHEN 6 THEN 'Cerrada'
+                        WHEN 7 THEN 'Reactivada'
+                        ELSE 'EnDesarrollo'
+                    END;
+
+                    ALTER TABLE dbo.Incidents DROP COLUMN Status;
+                    EXEC sp_rename 'dbo.Incidents.StatusText', 'Status', 'COLUMN';
+                    ALTER TABLE dbo.Incidents ALTER COLUMN Status nvarchar(30) NOT NULL;
+                END
+            ");
+
+            // =========================================================================
+            // 5. Priority: int -> nvarchar(20). Mismo criterio defensivo.
+            // =========================================================================
+            migrationBuilder.Sql(@"
+                IF EXISTS (
+                    SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                    WHERE TABLE_NAME = 'Incidents' AND COLUMN_NAME = 'Priority' AND DATA_TYPE = 'int'
+                )
+                BEGIN
+                    ALTER TABLE dbo.Incidents ADD PriorityText nvarchar(20) NULL;
+
+                    UPDATE Incidents
+                    SET PriorityText = CASE Priority
+                        WHEN 0 THEN 'Baja'
+                        WHEN 1 THEN 'Media'
+                        WHEN 2 THEN 'Alta'
+                        WHEN 3 THEN 'Critica'
+                        ELSE 'Media'
+                    END;
+
+                    ALTER TABLE dbo.Incidents DROP COLUMN Priority;
+                    EXEC sp_rename 'dbo.Incidents.PriorityText', 'Priority', 'COLUMN';
+                    ALTER TABLE dbo.Incidents ALTER COLUMN Priority nvarchar(20) NOT NULL;
+                END
+            ");
+        }
+
+        protected override void Down(MigrationBuilder migrationBuilder)
+        {
+            // Reversión best-effort: no reconstruye "el" responsable único a partir
+            // de la lista de N responsables (esa información ya no es 1:1 reconstruible).
+            migrationBuilder.Sql(@"
+                IF EXISTS (
+                    SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                    WHERE TABLE_NAME = 'Incidents' AND COLUMN_NAME = 'Priority' AND DATA_TYPE = 'nvarchar'
+                )
+                BEGIN
+                    ALTER TABLE dbo.Incidents ADD PriorityInt int NULL;
+                    UPDATE Incidents SET PriorityInt = CASE Priority
+                        WHEN 'Baja' THEN 0 WHEN 'Media' THEN 1 WHEN 'Alta' THEN 2 WHEN 'Critica' THEN 3 ELSE 1 END;
+                    ALTER TABLE dbo.Incidents DROP COLUMN Priority;
+                    EXEC sp_rename 'dbo.Incidents.PriorityInt', 'Priority', 'COLUMN';
+                    ALTER TABLE dbo.Incidents ALTER COLUMN Priority int NOT NULL;
+                END
+            ");
+
+            migrationBuilder.Sql(@"
+                IF EXISTS (
+                    SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                    WHERE TABLE_NAME = 'Incidents' AND COLUMN_NAME = 'Status' AND DATA_TYPE = 'nvarchar'
+                )
+                BEGIN
+                    ALTER TABLE dbo.Incidents ADD StatusInt int NULL;
+                    UPDATE Incidents SET StatusInt = CASE Status
+                        WHEN 'EnDesarrollo' THEN 3 WHEN 'Resuelta' THEN 5
+                        WHEN 'Cerrada' THEN 6 WHEN 'Reactivada' THEN 7 ELSE 3 END;
+                    ALTER TABLE dbo.Incidents DROP COLUMN Status;
+                    EXEC sp_rename 'dbo.Incidents.StatusInt', 'Status', 'COLUMN';
+                    ALTER TABLE dbo.Incidents ALTER COLUMN Status int NOT NULL;
+                END
+            ");
+
+            migrationBuilder.Sql(@"
+                IF NOT EXISTS (
+                    SELECT 1 FROM sys.columns
+                    WHERE object_id = OBJECT_ID('dbo.Incidents') AND name = 'CurrentResponsibleId'
+                )
+                BEGIN
+                    ALTER TABLE dbo.Incidents ADD CurrentResponsibleId uniqueidentifier NULL;
+                    CREATE INDEX IX_Incidents_CurrentResponsibleId ON dbo.Incidents(CurrentResponsibleId);
+                    ALTER TABLE dbo.Incidents
+                    ADD CONSTRAINT FK_Incidents_SecurityUsers_CurrentResponsibleId
+                    FOREIGN KEY (CurrentResponsibleId) REFERENCES dbo.security_users(Id);
+                END
+            ");
+
+            migrationBuilder.Sql(@"
+                IF EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_IncidentParticipants_Areas')
+                BEGIN
+                    ALTER TABLE dbo.IncidentParticipants DROP CONSTRAINT FK_IncidentParticipants_Areas;
+                END
+            ");
+
+            migrationBuilder.Sql(@"
+                IF EXISTS (
+                    SELECT 1 FROM sys.indexes
+                    WHERE name = 'IX_IncidentParticipants_AreaId' AND object_id = OBJECT_ID('dbo.IncidentParticipants')
+                )
+                BEGIN
+                    DROP INDEX IX_IncidentParticipants_AreaId ON dbo.IncidentParticipants;
+                END
+            ");
+
+            migrationBuilder.Sql(@"
+                IF EXISTS (
+                    SELECT 1 FROM sys.columns
+                    WHERE object_id = OBJECT_ID('dbo.IncidentParticipants') AND name = 'AreaId'
+                )
+                BEGIN
+                    ALTER TABLE dbo.IncidentParticipants DROP COLUMN AreaId;
+                END
+            ");
+        }
     }
 }
