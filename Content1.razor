@@ -1,248 +1,50 @@
-using Microsoft.EntityFrameworkCore.Migrations;
-
-#nullable disable
-
-namespace CorpWiki.Infrastructure.Persistence.Migrations
+if (initialResponsibleUserId.HasValue && initialResponsibleUserId.Value == createdByUserId)
 {
-    public partial class ResponsablesMultiplesYEstadosReducidos : Migration
+    // Es la misma persona: sube su única fila a Responsable, no agregues otra.
+    var creatorRow = await _db.IncidentParticipants
+        .FirstOrDefaultAsync(p => p.IncidentId == incident.Id && p.SecurityUserId == createdByUserId && p.RemovedAt == null);
+    if (creatorRow != null) creatorRow.Role = IncidentParticipantRole.Responsable;
+}
+else if (initialResponsibleUserId.HasValue)
+{
+    // ... (el bloque que ya tenías, sin cambios)
+}
+
+
+
+
+
+
+var existingRow = await _db.IncidentParticipants
+    .FirstOrDefaultAsync(p => p.IncidentId == incidentId && p.SecurityUserId == userId && p.RemovedAt == null);
+
+if (existingRow != null)
+{
+    existingRow.Role = IncidentParticipantRole.Responsable;
+    existingRow.AreaId = incident.CurrentAreaId;
+}
+else
+{
+    _db.IncidentParticipants.Add(new IncidentParticipant { /* ... como ya tenías ... */ });
+}
+
+
+
+
+
+
+foreach (var u in newUsers)
+{
+    var existingRow = await _db.IncidentParticipants
+        .FirstOrDefaultAsync(p => p.IncidentId == incidentId && p.SecurityUserId == u.Id && p.RemovedAt == null);
+
+    if (existingRow != null)
     {
-        protected override void Up(MigrationBuilder migrationBuilder)
-        {
-            // =========================================================================
-            // 1. Agregar AreaId a IncidentParticipants (nullable primero, para poder
-            //    rellenar filas ya existentes antes de exigir el NOT NULL).
-            // =========================================================================
-            migrationBuilder.AddColumn<Guid>(
-                name: "AreaId",
-                table: "IncidentParticipants",
-                type: "uniqueidentifier",
-                nullable: true);
-
-            migrationBuilder.Sql(@"
-                UPDATE p
-                SET p.AreaId = i.CurrentAreaId
-                FROM IncidentParticipants p
-                INNER JOIN Incidents i ON i.Id = p.IncidentId
-                WHERE p.AreaId IS NULL;
-            ");
-
-            migrationBuilder.AlterColumn<Guid>(
-                name: "AreaId",
-                table: "IncidentParticipants",
-                type: "uniqueidentifier",
-                nullable: false,
-                oldClrType: typeof(Guid),
-                oldType: "uniqueidentifier",
-                oldNullable: true);
-
-            migrationBuilder.CreateIndex(
-                name: "IX_IncidentParticipants_AreaId",
-                table: "IncidentParticipants",
-                column: "AreaId");
-
-            migrationBuilder.AddForeignKey(
-                name: "FK_IncidentParticipants_Areas",
-                table: "IncidentParticipants",
-                column: "AreaId",
-                principalTable: "Areas",
-                principalColumn: "Id",
-                onDelete: ReferentialAction.Restrict);
-
-            // =========================================================================
-            // 2. Migrar el responsable único actual (CurrentResponsibleId) a la tabla
-            //    de participantes ANTES de borrar la columna, para no perder el dato.
-            //    Usa upsert: si el usuario ya tenía una fila activa (p.ej. como
-            //    Colaborador), se la sube a Responsable en vez de duplicarla — el
-            //    índice único (IncidentId+SecurityUserId con RemovedAt NULL) solo
-            //    permite una fila activa por usuario por incidencia.
-            // =========================================================================
-            migrationBuilder.Sql(@"
-                UPDATE p
-                SET p.Role = 'Responsable',
-                    p.AreaId = i.CurrentAreaId
-                FROM IncidentParticipants p
-                INNER JOIN Incidents i ON i.Id = p.IncidentId
-                WHERE i.CurrentResponsibleId IS NOT NULL
-                  AND p.SecurityUserId = i.CurrentResponsibleId
-                  AND p.RemovedAt IS NULL
-                  AND p.Role <> 'Responsable';
-            ");
-
-            migrationBuilder.Sql(@"
-                INSERT INTO IncidentParticipants (Id, IncidentId, SecurityUserId, AreaId, Role, AssignedAt, RemovedAt)
-                SELECT NEWID(), i.Id, i.CurrentResponsibleId, i.CurrentAreaId, 'Responsable', i.UpdatedAt, NULL
-                FROM Incidents i
-                WHERE i.CurrentResponsibleId IS NOT NULL
-                  AND NOT EXISTS (
-                      SELECT 1 FROM IncidentParticipants p
-                      WHERE p.IncidentId = i.Id
-                        AND p.SecurityUserId = i.CurrentResponsibleId
-                        AND p.RemovedAt IS NULL
-                  );
-            ");
-
-            // =========================================================================
-            // 3. Quitar el responsable único: FK, índice y columna.
-            // =========================================================================
-            migrationBuilder.DropForeignKey(
-                name: "FK_Incidents_SecurityUsers_CurrentResponsibleId",
-                table: "Incidents");
-
-            migrationBuilder.DropIndex(
-                name: "IX_Incidents_CurrentResponsibleId",
-                table: "Incidents");
-
-            migrationBuilder.DropColumn(
-                name: "CurrentResponsibleId",
-                table: "Incidents");
-
-            // =========================================================================
-            // 4. Convertir Status de int a nvarchar(30), remapeando los estados viejos
-            //    (8 valores) a los 4 nuevos. Nueva/Asignada/EnAnalisis/PendienteOtraArea
-            //    colapsan todos en "EnDesarrollo".
-            // =========================================================================
-            migrationBuilder.AddColumn<string>(
-                name: "StatusText",
-                table: "Incidents",
-                type: "nvarchar(30)",
-                maxLength: 30,
-                nullable: true);
-
-            migrationBuilder.Sql(@"
-                UPDATE Incidents
-                SET StatusText = CASE Status
-                    WHEN 0 THEN 'EnDesarrollo'   -- Nueva
-                    WHEN 1 THEN 'EnDesarrollo'   -- Asignada
-                    WHEN 2 THEN 'EnDesarrollo'   -- EnAnalisis
-                    WHEN 3 THEN 'EnDesarrollo'   -- EnDesarrollo
-                    WHEN 4 THEN 'EnDesarrollo'   -- PendienteOtraArea (eliminado)
-                    WHEN 5 THEN 'Resuelta'
-                    WHEN 6 THEN 'Cerrada'
-                    WHEN 7 THEN 'Reactivada'
-                    ELSE 'EnDesarrollo'
-                END;
-            ");
-
-            migrationBuilder.DropColumn(name: "Status", table: "Incidents");
-
-            migrationBuilder.RenameColumn(
-                name: "StatusText",
-                table: "Incidents",
-                newName: "Status");
-
-            migrationBuilder.AlterColumn<string>(
-                name: "Status",
-                table: "Incidents",
-                type: "nvarchar(30)",
-                maxLength: 30,
-                nullable: false,
-                oldClrType: typeof(string),
-                oldType: "nvarchar(30)",
-                oldNullable: true);
-
-            // =========================================================================
-            // 5. Convertir Priority de int a nvarchar(20). El orden de valores no
-            //    cambió, solo el tipo de almacenamiento.
-            // =========================================================================
-            migrationBuilder.AddColumn<string>(
-                name: "PriorityText",
-                table: "Incidents",
-                type: "nvarchar(20)",
-                maxLength: 20,
-                nullable: true);
-
-            migrationBuilder.Sql(@"
-                UPDATE Incidents
-                SET PriorityText = CASE Priority
-                    WHEN 0 THEN 'Baja'
-                    WHEN 1 THEN 'Media'
-                    WHEN 2 THEN 'Alta'
-                    WHEN 3 THEN 'Critica'
-                    ELSE 'Media'
-                END;
-            ");
-
-            migrationBuilder.DropColumn(name: "Priority", table: "Incidents");
-
-            migrationBuilder.RenameColumn(
-                name: "PriorityText",
-                table: "Incidents",
-                newName: "Priority");
-
-            migrationBuilder.AlterColumn<string>(
-                name: "Priority",
-                table: "Incidents",
-                type: "nvarchar(20)",
-                maxLength: 20,
-                nullable: false,
-                oldClrType: typeof(string),
-                oldType: "nvarchar(20)",
-                oldNullable: true);
-        }
-
-        protected override void Down(MigrationBuilder migrationBuilder)
-        {
-            // --- Priority: string -> int ---
-            migrationBuilder.AddColumn<int>(
-                name: "PriorityInt", table: "Incidents", type: "int", nullable: true);
-
-            migrationBuilder.Sql(@"
-                UPDATE Incidents
-                SET PriorityInt = CASE Priority
-                    WHEN 'Baja' THEN 0
-                    WHEN 'Media' THEN 1
-                    WHEN 'Alta' THEN 2
-                    WHEN 'Critica' THEN 3
-                    ELSE 1
-                END;
-            ");
-
-            migrationBuilder.DropColumn(name: "Priority", table: "Incidents");
-            migrationBuilder.RenameColumn(name: "PriorityInt", table: "Incidents", newName: "Priority");
-            migrationBuilder.AlterColumn<int>(
-                name: "Priority", table: "Incidents", type: "int", nullable: false,
-                oldClrType: typeof(string), oldType: "nvarchar(20)", oldNullable: true);
-
-            // --- Status: string -> int (con pérdida de granularidad: todo lo que era
-            //     Nueva/Asignada/EnAnalisis/PendienteOtraArea vuelve como EnDesarrollo=3,
-            //     porque esa distinción ya no existe en el modelo actual) ---
-            migrationBuilder.AddColumn<int>(
-                name: "StatusInt", table: "Incidents", type: "int", nullable: true);
-
-            migrationBuilder.Sql(@"
-                UPDATE Incidents
-                SET StatusInt = CASE Status
-                    WHEN 'EnDesarrollo' THEN 3
-                    WHEN 'Resuelta' THEN 5
-                    WHEN 'Cerrada' THEN 6
-                    WHEN 'Reactivada' THEN 7
-                    ELSE 3
-                END;
-            ");
-
-            migrationBuilder.DropColumn(name: "Status", table: "Incidents");
-            migrationBuilder.RenameColumn(name: "StatusInt", table: "Incidents", newName: "Status");
-            migrationBuilder.AlterColumn<int>(
-                name: "Status", table: "Incidents", type: "int", nullable: false,
-                oldClrType: typeof(string), oldType: "nvarchar(30)", oldNullable: true);
-
-            // --- Restaurar CurrentResponsibleId (vacío: no se puede reconstruir de
-            //     forma confiable "el" responsable único a partir de una lista de N) ---
-            migrationBuilder.AddColumn<Guid>(
-                name: "CurrentResponsibleId", table: "Incidents", type: "uniqueidentifier", nullable: true);
-
-            migrationBuilder.CreateIndex(
-                name: "IX_Incidents_CurrentResponsibleId", table: "Incidents", column: "CurrentResponsibleId");
-
-            migrationBuilder.AddForeignKey(
-                name: "FK_Incidents_SecurityUsers_CurrentResponsibleId",
-                table: "Incidents", column: "CurrentResponsibleId",
-                principalTable: "security_users", principalColumn: "Id",
-                onDelete: ReferentialAction.Restrict);
-
-            migrationBuilder.DropForeignKey(name: "FK_IncidentParticipants_Areas", table: "IncidentParticipants");
-            migrationBuilder.DropIndex(name: "IX_IncidentParticipants_AreaId", table: "IncidentParticipants");
-            migrationBuilder.DropColumn(name: "AreaId", table: "IncidentParticipants");
-        }
+        existingRow.Role = IncidentParticipantRole.Responsable;
+        existingRow.AreaId = toAreaId;
+    }
+    else
+    {
+        _db.IncidentParticipants.Add(new IncidentParticipant { /* ... como ya tenías ... */ });
     }
 }
