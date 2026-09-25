@@ -1,56 +1,48 @@
-<div class="journey-modal__header" style="background:@ColorUtils.ToRgba(_journeyStep.Color, 0.14); color:@_journeyStep.Color;">
+<div class="journey-modal__header" style="background:@ColorUtils.ToRgba(_journeyStep.Color, 0.14); color:@_journeyStep.Color; padding: 16px 20px; border-radius: 8px 8px 0 0;">
     
-    <!-- 1. Fila con el Icono, Título "Desarrollo" y Botones de la derecha -->
-    <div style="display:flex; align-items:center; justify-content:space-between; width:100%;">
-        <div style="display:flex; align-items:center; gap:8px;">
-            <span class="journey-modal__header-icon" style="background:@_journeyStep.Color;">
+    <!-- 1. FILA SUPERIOR: Título, Icono y Botones -->
+    <div style="display: flex; align-items: center; justify-content: space-between; width: 100%;">
+        
+        <!-- Lado izquierdo: Icono y Texto -->
+        <div style="display: flex; align-items: center; gap: 12px;">
+            <span class="journey-modal__header-icon" style="background:@_journeyStep.Color; display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 50%; color: #fff;">
                 <Icon Name="@_journeyStep.Icon" />
             </span>
-            <h3 class="journey-modal__title">@_journeyStep.AreaName</h3>
+            
+            <div>
+                <h3 class="journey-modal__title" style="margin: 0; font-size: 1.1rem; font-weight: 600;">@_journeyStep.AreaName</h3>
+                <span class="journey-modal__step-label" style="font-size: 0.8rem; opacity: 0.8;">
+                    Etapa @(_journeyStepIndex + 1) de @_journey.Count
+                </span>
+            </div>
         </div>
 
-        <!-- Aquí van tus botones existentes de expandir y cerrar modal -->
-        <div>
-            <button class="journey-modal__expand-btn" @onclick="ToggleExpandModal">
+        <!-- Lado derecho: Botón Maximizar/Restaurar y Cerrar -->
+        <div style="display: flex; align-items: center; gap: 8px;">
+            <button class="journey-modal__expand-btn" @onclick="ToggleExpandModal" style="background: transparent; border: none; cursor: pointer; color: inherit;">
                 @if (!_isExpanded)
                 {
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>
                     </svg>
                 }
                 else
                 {
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/>
                     </svg>
                 }
             </button>
-            <button class="btn btn-ghost btn-sm" @onclick="CloseJourneyModal">
+            
+            <button class="btn btn-ghost btn-sm" @onclick="CloseJourneyModal" style="background: transparent; border: none; cursor: pointer; color: inherit;">
                 <Icon Name="x-circle" />
             </button>
         </div>
     </div>
 
-    <!-- 2. Barra de Progreso (Mover aquí, abajo del título) -->
-    <div class="journey-progress" style="margin-top: 10px; width: 100%;">
-        <div class="journey-progress__fill" style="width:@($"{( (_journeyStepIndex + 1) * 100.0 / _journey.Count ):F0}%")"></div>
+    <!-- 2. FILA INFERIOR: Barra de Progreso situada JUSTO ABAJO -->
+    <div class="journey-progress" style="width: 100%; height: 6px; background-color: rgba(0, 0, 0, 0.1); border-radius: 3px; margin-top: 14px; overflow: hidden;">
+        <div class="journey-progress__fill" style="width: @($"{( (_journeyStepIndex + 1) * 100.0 / _journey.Count ):F0}%"); height: 100%; background-color: @_journeyStep.Color; border-radius: 3px; transition: width 0.3s ease;"></div>
     </div>
 
 </div>
-
-
-
-
-
-
-.journey-modal__header {
-    display: flex;
-    flex-direction: column; /* Alinea los elementos verticalmente */
-    width: 100%;
-}
-
-.journey-progress {
-    position: relative;
-    width: 100%;
-    height: 4px; /* O el alto que le tengas definido */
-}
