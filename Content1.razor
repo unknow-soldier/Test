@@ -1,50 +1,326 @@
-<h4 class="widget_title journey-section journey-section--delay-2">
-    <Icon Name="users" /> Personas del equipo
-    <span class="journey-section__count">@_journeyStep.Users.Count</span>
-</h4>
-@if (_journeyStep.Users.Count == 0)
+@using CorpWiki.Application.DTOs.Incidents
+@using CorpWiki.Application.Helpers
+@using CorpWiki.Web.Extensions
+
+<a href="@($"/incidencias/{Item.Id}")"
+   class="card"
+   style="display:flex; flex-direction:column; gap: var(--space-3); padding: var(--space-4) var(--space-5);
+          margin-bottom: var(--space-3); text-decoration:none; color:inherit; transition: box-shadow 0.15s ease;">
+
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; gap: var(--space-3); flex-wrap:wrap;">
+        <div style="min-width:0;">
+            <span style="font-size: 0.8rem; color: var(--text-tertiary); font-weight:600;">@Item.Code</span>
+            <h4 style="margin: 2px 0 0; font-size: 1rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">@Item.Title</h4>
+        </div>
+        <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
+            <IncidentStatusBadge Status="Item.Status" />
+            <IncidentPriorityBadge Priority="Item.Priority" />
+            <AreaBadge Name="@Item.AreaName" Color="@Item.AreaColor" ShowIcon="false" Small="true" />
+        </div>
+    </div>
+
+    <div style="display:flex; justify-content:space-between; align-items:center; gap: var(--space-3); flex-wrap:wrap;">
+        <div style="display:flex; align-items:center; gap:6px;">
+            @if (Item.Responsibles.Count == 0)
+            {
+                <span style="font-size:0.85rem; color: var(--text-tertiary);">Sin responsables</span>
+            }
+            else
+            {
+                @foreach (var r in Item.Responsibles.Take(3))
+                {
+                    <UserAvatar FullName="@r.FullName" Initials="@r.Initials"
+                                ColorFrom="@r.AvatarColorFrom" ColorTo="@r.AvatarColorTo"
+                                Size="UserAvatar.AvatarSize.Sm" />
+                }
+                @if (Item.Responsibles.Count > 3)
+                {
+                    <span style="font-size:0.8rem; color: var(--text-tertiary);">+@(Item.Responsibles.Count - 3)</span>
+                }
+            }
+        </div>
+
+        <div style="display:flex; gap: var(--space-4); font-size:0.8rem; color: var(--text-tertiary); align-items:center;">
+            <span style="display:flex; align-items:center; gap:4px;"><Icon Name="message-circle" /> @Item.CommentsCount</span>
+            <span style="display:flex; align-items:center; gap:4px;"><Icon Name="arrow-right" /> @Item.TransfersCount</span>
+            <span style="display:flex; align-items:center; gap:4px;"><Icon Name="clock" /> @Item.UpdatedAt.ToRelativeLabel()</span>
+        </div>
+    </div>
+</a>
+
+@code {
+    [Parameter, EditorRequired] public IncidentSummaryDto Item { get; set; } = null!;
+}
+
+
+
+
+
+
+
+@page "/incidencias/listado"
+@rendermode InteractiveServer
+@inject IIncidentService Incidents
+@using CorpWiki.Web.Components.Shared.Incidents
+<PageTitle>DaviWiki - Listado de Incidencias</PageTitle>
+
+<div class="page-header">
+    <div>
+        <h1>Listado de Incidencias</h1>
+        <p>@_filtered.Count() de @_all.Count incidencias.</p>
+    </div>
+    <div class="page-header__actions">
+        <a class="btn btn--primary" href="/incidencias/nueva"><Icon Name="plus" /> Nueva incidencia</a>
+    </div>
+</div>
+
+<div class="card widget" style="margin-bottom: var(--space-5);">
+    <h4 class="widget__title" style="margin-bottom: var(--space-3);"><Icon Name="pie-chart" />Distribución por estado</h4>
+    <SegmentedBar Segments="_statusBarSegments" />
+    <div class="distribution-legend-row">
+        @foreach (var chip in _statusChips)
+        {
+            <button type="button" class="chip @(_statusFilter == chip.Value ? "chip--active" : "")"
+                    @onclick="() => QuickFilterStatus(chip.Value)">
+                <span class="donut-legend__dot" style="background:@chip.Color;"></span>@chip.Label (@chip.Count)
+            </button>
+        }
+    </div>
+</div>
+
+<div class="incidents-filters-row">
+    <div class="explorer-search">
+        <Icon Name="search" />
+        <input class="explorer-search__input" placeholder="Buscar por código o título..."
+               @bind="_search" @bind:event="oninput" />
+    </div>
+
+    <select class="input" @bind="_areaFilter">
+        <option value="">Todas las áreas</option>
+        @foreach (var area in _areas)
+        {
+            <option value="@area.Name">@area.Name</option>
+        }
+    </select>
+
+    <select class="input" @bind="_statusFilter">
+        <option value="">Todos los estados</option>
+        @foreach (var status in Enum.GetValues<IncidentStatus>())
+        {
+            <option value="@status">@IncidentLabels.Status(status)</option>
+        }
+    </select>
+
+    <select class="input" @bind="_priorityFilter">
+        <option value="">Todas las prioridades</option>
+        @foreach (var priority in Enum.GetValues<IncidentPriority>())
+        {
+            <option value="@priority">@IncidentLabels.Priority(priority)</option>
+        }
+    </select>
+
+    <button class="chip-incidencias @(_onlyActive ? "chip--active" : "")" @onclick="ToggleOnlyActive">
+        Solo activas
+    </button>
+</div>
+
+@if (!_pageItems.Any())
 {
-    <div class="journey-empty">
-        <Icon Name="users" />
-        <p class="journey-empty__title">Sin participantes registrados</p>
-        <p class="journey-empty__desc">Esta área todavía no tiene usuarios asociados.</p>
+    <div class="empty-state">
+        <Icon Name="inbox" />
+        <h3>Sin resultados</h3>
+        <p>Ningún incidente coincide con los filtros aplicados.</p>
     </div>
 }
 else
 {
-    <div class="person-row-list">
-        @foreach (var resp in ResponsibleUsersIn(_journeyStep))
+    <div class="incident-list">
+        @foreach (var item in _pageItems)
         {
-            <div class="activity-row activity-row--highlight">
-                <span class="avatar avatar--sm">@InitialsOf(resp.FullName)</span>
-                <div style="flex:1; min-width:0;">
-                    <p class="activity-row__text">
-                        <span class="badge badge--brand"><Icon Name="star" /> Responsable actual</span>
-                        @if (!string.IsNullOrEmpty(GetResponsibleSince(resp.Id)))
-                        {
-                            <p class="journey-responsible-time">Desde @GetResponsibleSince(resp.Id)</p>
-                        }
-                        <br />
-                        <strong>@resp.FullName</strong>
-                    </p>
-                    <p class="activity-row__time">@resp.Position</p>
-                </div>
-            </div>
+            <IncidentListRow Item="item" />
         }
-        @if (OthersIn(_journeyStep).Count > 0)
+    </div>
+
+    <div class="pagination">
+        <button class="pagination__btn pagination__btn--nav" disabled="@(_page == 1)" @onclick="() => GoToPage(_page - 1)">
+            <Icon Name="chevron-left" />
+        </button>
+        @for (var p = 1; p <= _totalPages; p++)
         {
-            <p class="journey-subheading">Otros participantes</p>
-            @foreach (var u in OthersIn(_journeyStep))
-            {
-                <div class="activity-row">
-                    <span class="avatar avatar--sm">@InitialsOf(u.FullName)</span>
-                    <div style="flex:1; min-width:0;">
-                        <p class="activity-row__text"><strong>@u.FullName</strong></p>
-                        <p class="activity-row__time">@u.Position</p>
-                    </div>
-                </div>
-            }
+            var pageNumber = p;
+            <button class="pagination__btn @(pageNumber == _page ? "pagination__btn--active" : "")"
+                    @onclick="() => GoToPage(pageNumber)">
+                @pageNumber
+            </button>
         }
+        <button class="pagination__btn pagination__btn--nav" disabled="@(_page == _totalPages)" @onclick="() => GoToPage(_page + 1)">
+            <Icon Name="chevron-right" />
+        </button>
+    </div>
+}
+
+@code {
+    [SupplyParameterFromQuery(Name = "estado")] public string? QueryStatus { get; set; }
+    [SupplyParameterFromQuery(Name = "prioridad")] public string? QueryPriority { get; set; }
+    [SupplyParameterFromQuery(Name = "area")] public string? QueryArea { get; set; }
+    [SupplyParameterFromQuery(Name = "buscar")] public string? QuerySearch { get; set; }
+
+    private const int PageSize = 8;
+
+    private IReadOnlyList<IncidentSummaryDto> _all = new List<IncidentSummaryDto>();
+    private IReadOnlyList<Area> _areas = new List<Area>();
+
+    private string _search = string.Empty;
+    private string _areaFilter = string.Empty;
+    private string _statusFilter = string.Empty;
+    private string _priorityFilter = string.Empty;
+    private bool _onlyActive;
+    private int _page = 1;
+
+    private List<(string Label, double Value, string Color)> _statusBarSegments = new();
+    private List<(string Label, string Value, int Count, string Color)> _statusChips = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _statusFilter = QueryStatus ?? string.Empty;
+        _priorityFilter = QueryPriority ?? string.Empty;
+        _areaFilter = QueryArea ?? string.Empty;
+        _search = QuerySearch ?? string.Empty;
+
+        _all = await Incidents.GetIncidentSummariesAsync();
+        _areas = await Incidents.GetAreasAsync();
+
+        foreach (var status in Enum.GetValues<IncidentStatus>())
+        {
+            var count = _all.Count(i => i.Status == status);
+            if (count == 0) continue;
+
+            var color = $"var(--status-{IncidentCssHelpers.StatusSuffix(status)})";
+            _statusBarSegments.Add((IncidentLabels.Status(status), count, color));
+            _statusChips.Add((IncidentLabels.Status(status), status.ToString(), count, color));
+        }
+    }
+
+    private void QuickFilterStatus(string statusValue)
+    {
+        _statusFilter = _statusFilter == statusValue ? string.Empty : statusValue;
+        _page = 1;
+    }
+
+    private IEnumerable<IncidentSummaryDto> _filtered => _all.Where(i =>
+        (string.IsNullOrWhiteSpace(_search)
+            || i.Title.Contains(_search, StringComparison.OrdinalIgnoreCase)
+            || i.Code.Contains(_search, StringComparison.OrdinalIgnoreCase)
+            || i.Responsibles.Any(r => r.FullName.Contains(_search, StringComparison.OrdinalIgnoreCase)))
+        && (string.IsNullOrEmpty(_areaFilter) || i.AreaName == _areaFilter)
+        && (string.IsNullOrEmpty(_statusFilter) || i.Status.ToString() == _statusFilter)
+        && (string.IsNullOrEmpty(_priorityFilter) || i.Priority.ToString() == _priorityFilter)
+        && (!_onlyActive || i.Status != IncidentStatus.Cerrada));
+
+    private int _totalPages => Math.Max(1, (int)Math.Ceiling(_filtered.Count() / (double)PageSize));
+
+    private List<IncidentSummaryDto> _pageItems =>
+        _filtered.Skip((_page - 1) * PageSize).Take(PageSize).ToList();
+
+    private void ToggleOnlyActive()
+    {
+        _onlyActive = !_onlyActive;
+        _page = 1;
+    }
+
+    private void GoToPage(int page)
+    {
+        _page = Math.Clamp(page, 1, _totalPages);
+    }
+}
+
+
+
+
+Task<bool> ChangeStatusAsync(Guid incidentId, IncidentStatus newStatus, Guid actorUserId);
+Task<bool> CloseIncidentAsync(Guid incidentId, Guid actorUserId);
+
+
+
+public async Task<bool> ChangeStatusAsync(Guid incidentId, IncidentStatus newStatus, Guid actorUserId)
+{
+    var incident = await GetIncidentByIdAsync(incidentId);
+    if (incident == null) return false;
+
+    var isResponsible = await _db.IncidentParticipants.AnyAsync(p =>
+        p.IncidentId == incidentId && p.SecurityUserId == actorUserId &&
+        p.Role == IncidentParticipantRole.Responsable && p.RemovedAt == null);
+    if (!isResponsible) return false;
+
+    var now = DateTime.Now;
+    incident.Status = newStatus;
+    incident.UpdatedAt = now;
+
+    var actor = await GetUserByIdAsync(actorUserId);
+    await LogActivityAsync(incidentId, IncidentActivityType.CambioEstado, actorUserId,
+        $"{actor?.FullName ?? "-"} cambió el estado a {IncidentLabels.Status(newStatus)}.", now);
+
+    await _db.SaveChangesAsync();
+    return true;
+}
+
+public async Task<bool> CloseIncidentAsync(Guid incidentId, Guid actorUserId)
+{
+    var incident = await GetIncidentByIdAsync(incidentId);
+    if (incident == null) return false;
+
+    var isResponsible = await _db.IncidentParticipants.AnyAsync(p =>
+        p.IncidentId == incidentId && p.SecurityUserId == actorUserId &&
+        p.Role == IncidentParticipantRole.Responsable && p.RemovedAt == null);
+    if (!isResponsible) return false;
+
+    var now = DateTime.Now;
+    await CloseTimeSegmentAsync(incidentId, now);
+
+    incident.Status = IncidentStatus.Cerrada;
+    incident.ClosedAt = now;
+    incident.UpdatedAt = now;
+
+    var actor = await GetUserByIdAsync(actorUserId);
+    await LogActivityAsync(incidentId, IncidentActivityType.Cerrada, actorUserId,
+        $"{actor?.FullName ?? "-"} cerró la incidencia.", now);
+
+    await _db.SaveChangesAsync();
+    return true;
+}
+
+
+
+
+
+@if (_detail.Status != IncidentStatus.Cerrada && IsCurrentUserResponsible)
+{
+    <button class="btn btn--danger btn--sm" @onclick="RequestCloseConfirmation">
+        <Icon Name="check-circle" /> Cerrar
+    </button>
+}
+else if (_detail.Status == IncidentStatus.Cerrada)
+{
+    <button class="btn btn--secondary btn--sm" @onclick="RequestReactivateConfirmation">
+        <Icon Name="rotate-ccw" /> Reactivar
+    </button>
+}
+
+
+
+@if (IsCurrentUserResponsible)
+{
+    <div class="card widget">
+        <h4 class="widget__title"><Icon Name="refresh-cw" />Cambiar estado</h4>
+        <div class="form-group">
+            <select class="input" @bind="_newStatus">
+                @foreach (var s in Enum.GetValues<IncidentStatus>())
+                {
+                    <option value="@s">@IncidentLabels.Status(s)</option>
+                }
+            </select>
+        </div>
+        <button class="btn btn--secondary btn--sm" @onclick="ChangeStatusAction">Actualizar estado</button>
     </div>
 }
 
@@ -52,54 +328,32 @@ else
 
 
 
-
-
-<h4 class="widget_title journey-section journey-section--delay-2">
-    <Icon Name="users" /> Personas del equipo
-    <span class="journey-section__count">@_journeyStep.Users.Count</span>
-</h4>
-@if (_journeyStep.Users.Count == 0)
+private async Task ChangeStatusAction()
 {
-    <div class="journey-empty">
-        <Icon Name="users" />
-        <p class="journey-empty__title">Sin participantes registrados</p>
-        <p class="journey-empty__desc">Esta área todavía no tiene usuarios asociados.</p>
-    </div>
+    if (_detail is null) return;
+    var ok = await Incidents.ChangeStatusAsync(_detail.Id, _newStatus, ActorId);
+    if (ok)
+    {
+        await LoadDetail();
+        Toast.Show($"Estado actualizado a {IncidentLabels.Status(_newStatus)}.", ToastVariant.Info, "refresh-cw");
+    }
+    else
+    {
+        Toast.Show("Solo un responsable activo puede cambiar el estado.", ToastVariant.Warning, "alert-triangle");
+    }
 }
-else
+
+private async Task CloseIncidentAction()
 {
-    <div class="person-row-list">
-        @foreach (var resp in ResponsibleUsersIn(_journeyStep))
-        {
-            <div class="activity-row activity-row--highlight">
-                <span class="avatar avatar--sm">@InitialsOf(resp.FullName)</span>
-                <div style="flex:1; min-width:0;">
-                    <p class="activity-row__text">
-                        <span class="badge badge--brand"><Icon Name="star" /> Responsable actual</span>
-                        @if (!string.IsNullOrEmpty(GetResponsibleSince(resp.Id)))
-                        {
-                            <p class="journey-responsible-time">Desde @GetResponsibleSince(resp.Id)</p>
-                        }
-                        <br />
-                        <strong>@resp.FullName</strong>
-                    </p>
-                    <p class="activity-row__time">@resp.Position</p>
-                </div>
-            </div>
-        }
-        @if (OthersIn(_journeyStep).Count > 0)
-        {
-            <p class="journey-subheading">Otros participantes</p>
-            @foreach (var u in OthersIn(_journeyStep))
-            {
-                <div class="activity-row">
-                    <span class="avatar avatar--sm">@InitialsOf(u.FullName)</span>
-                    <div style="flex:1; min-width:0;">
-                        <p class="activity-row__text"><strong>@u.FullName</strong></p>
-                        <p class="activity-row__time">@u.Position</p>
-                    </div>
-                </div>
-            }
-        }
-    </div>
+    if (_detail is null) return;
+    var ok = await Incidents.CloseIncidentAsync(_detail.Id, ActorId);
+    if (ok)
+    {
+        await LoadDetail();
+        Toast.Show("Incidencia cerrada.", ToastVariant.Success, "check-circle");
+    }
+    else
+    {
+        Toast.Show("Solo un responsable activo puede cerrar la incidencia.", ToastVariant.Warning, "alert-triangle");
+    }
 }
