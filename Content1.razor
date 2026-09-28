@@ -1,23 +1,5 @@
-<div class="journey-modal__header" style="background:@ColorUtils.ToRgba(stage.Color, 0.14); color:@stage.Color; display:flex; align-items:center; justify-content:space-between; padding: 1rem 1.25rem;">
-    <div style="display:flex; align-items:center; gap:var(--space-3); flex:1; min-width:0;">
-        <span class="journey-modal__header-icon" style="background:@stage.Color; display:inline-flex; align-items:center; justify-content:center; flex-shrink:0;">
-            <Icon Name="@stage.Icon" />
-        </span>
-        <div style="display:flex; flex-direction:column; min-width:0;">
-            <h3 class="journey-modal__title" style="margin:0; line-height:1.2;">@stage.AreaName</h3>
-            <div style="display:flex; gap:8px; align-items:center; font-size:0.85rem; margin-top:2px;">
-                <span>Etapa @(stage.Index + 1) de @_stories.Count</span>
-                <span class="journey-stage-badge">@StageLabel(stage)</span>
-            </div>
-        </div>
-    </div>
-    
-    <div style="display:flex; align-items:center; gap:6px; flex-shrink:0;">
-        <button class="journey-modal__expand-btn" @onclick="ToggleExpandModal" title="Ampliar / reducir">
-            <Icon Name="@(_isExpanded ? "minimize-2" : "maximize-2")" />
-        </button>
-        <button class="btn btn--ghost btn--sm" @onclick="CloseJourneyModal">
-            <Icon Name="x-circle" />
-        </button>
-    </div>
-</div>
+<!-- ✅ Opción 1 (Limpia) -->
+<span class="journey-modal__header-icon" style="background:@stage.Color; display:inline-flex; align-items:center; justify-content:center; flex-shrink:0">
+
+<!-- ✅ Opción 2 -->
+<span class="journey-modal__header-icon" style="background:@stage.Color; display:inline-flex; align-items:center; justify-content:center; flex-shrink:0;">
