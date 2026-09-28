@@ -1,5 +1,174 @@
-<!-- ✅ Opción 1 (Limpia) -->
-<span class="journey-modal__header-icon" style="background:@stage.Color; display:inline-flex; align-items:center; justify-content:center; flex-shrink:0">
+<div class="journey-modal__header"
+     style="--stage-color:@stage.Color;">
 
-<!-- ✅ Opción 2 -->
-<span class="journey-modal__header-icon" style="background:@stage.Color; display:inline-flex; align-items:center; justify-content:center; flex-shrink:0;">
+    <div class="journey-modal__header-main">
+
+        <div class="journey-modal__header-icon">
+            @((MarkupString)stage.Icon)
+        </div>
+
+        <div class="journey-modal__header-info">
+            <div class="journey-modal__title-row">
+                <h3>@stage.AreaName</h3>
+
+                <span class="journey-modal__stage-badge">
+                    Etapa @stage.Order de @_stories.Count
+                </span>
+            </div>
+
+            <div class="journey-modal__subtitle">
+                @StageLabel(stage)
+            </div>
+        </div>
+
+    </div>
+
+    <div class="journey-modal__header-actions">
+
+        <button type="button"
+                class="journey-modal__icon-button"
+                @onclick="ToggleJourneyExpanded"
+                title="@(_isExpanded ? "Ampliar" : "Reducir")">
+            <span class="material-icons">
+                @(_isExpanded ? "minimize" : "maximize")
+            </span>
+        </button>
+
+        <button type="button"
+                class="journey-modal__icon-button close"
+                @onclick="CloseJourneyModal"
+                title="Cerrar">
+            <span class="material-icons">close</span>
+        </button>
+
+    </div>
+
+</div>
+
+
+
+.journey-modal__header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+
+    padding: 20px 24px;
+
+    background: #fff;
+    border-bottom: 1px solid #e9ecef;
+}
+
+.journey-modal__header-main {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    min-width: 0;
+}
+
+.journey-modal__header-icon {
+    width: 44px;
+    height: 44px;
+    flex: 0 0 44px;
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    border-radius: 12px;
+
+    background: color-mix(
+        in srgb,
+        var(--stage-color) 12%,
+        white
+    );
+
+    color: var(--stage-color);
+}
+
+.journey-modal__header-icon .material-icons {
+    font-size: 22px;
+}
+
+.journey-modal__header-info {
+    min-width: 0;
+}
+
+.journey-modal__title-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.journey-modal__title-row h3 {
+    margin: 0;
+
+    font-size: 1.05rem;
+    font-weight: 700;
+    line-height: 1.2;
+
+    color: #202124;
+}
+
+.journey-modal__stage-badge {
+    padding: 4px 8px;
+
+    border-radius: 999px;
+
+    background: color-mix(
+        in srgb,
+        var(--stage-color) 10%,
+        white
+    );
+
+    color: var(--stage-color);
+
+    font-size: .72rem;
+    font-weight: 700;
+}
+
+.journey-modal__subtitle {
+    margin-top: 4px;
+
+    color: #6b7280;
+    font-size: .82rem;
+}
+
+.journey-modal__header-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+
+    flex-shrink: 0;
+}
+
+.journey-modal__icon-button {
+    width: 36px;
+    height: 36px;
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    border: 0;
+    border-radius: 9px;
+
+    background: transparent;
+    color: #6b7280;
+
+    cursor: pointer;
+
+    transition:
+        background .15s ease,
+        color .15s ease;
+}
+
+.journey-modal__icon-button:hover {
+    background: #f3f4f6;
+    color: #202124;
+}
+
+.journey-modal__icon-button.close:hover {
+    background: #fef2f2;
+    color: #dc2626;
+}
