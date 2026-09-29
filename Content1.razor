@@ -1,11 +1,72 @@
-AppDomain.CurrentDomain.UnhandledException += (sender, e) =>
+// Operación SOAP: CreateMail (colecciones) — Template 003, tal cual como funcionaba originalmente.
+private async Task<EmailSendResult> CreateMailAsync(string destinatario, string listaParametros)
 {
-    var ex = e.ExceptionObject as Exception;
-    Console.WriteLine($"[FATAL] UnhandledException: {ex}");
-};
+    string soapBody = $"<CreateMail xmlns=\"{SoapNamespace}\">" +
+        $"<Origin>{EscapeXml(_settings.Origin)}</Origin>" +
+        $"<System>{EscapeXml(_settings.System)}</System>" +
+        $"<Template>{EscapeXml(_settings.Template)}</Template>" +
+        $"<Adresses>{EscapeXml(destinatario)}</Adresses>" +
+        $"<ParameterList>{EscapeXml(listaParametros)}</ParameterList>" +
+        $"<HoldMailShipment>{EscapeXml(_settings.HoldMailShipment)}</HoldMailShipment>" +
+        $"</CreateMail>";
 
-TaskScheduler.UnobservedTaskException += (sender, e) =>
+    return await EnviarYParsearCreateMailAsync(soapBody);
+}
+
+// Operación SOAP: CreateMail (incidencias) — mismo cuerpo exacto, Template propio fijo.
+private async Task<EmailSendResult> CreateMailIncidenciaAsync(string destinatario, string listaParametros)
 {
-    Console.WriteLine($"[FATAL] UnobservedTaskException: {e.Exception}");
-    e.SetObserved();
-};
+    string soapBody = $"<CreateMail xmlns=\"{SoapNamespace}\">" +
+        $"<Origin>{EscapeXml(_settings.Origin)}</Origin>" +
+        $"<System>{EscapeXml(_settings.System)}</System>" +
+        $"<Template>{EscapeXml(_settings.TemplateIncidenciaAsignada)}</Template>" +
+        $"<Adresses>{EscapeXml(destinatario)}</Adresses>" +
+        $"<ParameterList>{EscapeXml(listaParametros)}</ParameterList>" +
+        $"<HoldMailShipment>{EscapeXml(_settings.HoldMailShipment)}</HoldMailShipment>" +
+        $"</CreateMail>";
+
+    return await EnviarYParsearCreateMailAsync(soapBody);
+}
+
+// Parseo de la respuesta, compartido por ambos métodos (esto sí es seguro
+// factorizarlo: ocurre DESPUÉS del envío, no afecta el envelope enviado).
+private async Task<EmailSendResult> EnviarYParsearCreateMailAsync(string soapBody)
+{
+    var (responseXml, rawResponse) = await EnviarSoapRequestAsync(
+        $"{SoapNamespace}CreateMail", soapBody);
+
+    XNamespace ns = SoapNamespace;
+    var createMailResult = responseXml.Descendants(ns + "CreateMailResult").FirstOrDefault();
+
+    string guidCode = createMailResult?.Element(ns + "GUIDCode")?.Value ?? "";
+    string shippingDate = createMailResult?.Element(ns + "ShippingDate")?.Value ?? "";
+
+    var soapFault = responseXml.Descendants(
+        XName.Get("Fault", "http://schemas.xmlsoap.org/soap/envelope/")).FirstOrDefault();
+
+    if (soapFault != null)
+    {
+        string faultString = soapFault.Element("faultstring")?.Value ?? "Error SOAP desconocido";
+        return new EmailSendResult
+        {
+            Exitoso = false,
+            GUIDCode = guidCode,
+            ShippingDate = shippingDate,
+            Mensaje = $"SOAP Fault: {faultString}",
+            RespuestaSoapCruda = rawResponse
+        };
+    }
+
+    bool exitoso = !string.IsNullOrEmpty(guidCode);
+
+    return new EmailSendResult
+    {
+        Exitoso = exitoso,
+        GUIDCode = guidCode,
+        ShippingDate = shippingDate,
+        Mensaje = exitoso
+            ? $"Correo creado y enviado. GUIDCode: {guidCode}"
+            : "CreateMail no retornó GUIDCode. El correo posiblemente no fue creado/enviado.",
+        RespuestaSoapCruda = rawResponse
+    };
+}
