@@ -1,57 +1,73 @@
-using CorpWiki.Domain.Entities;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Metadata.Builders;
-
-namespace CorpWiki.Infrastructure.Persistence.Configurations;
-
-public class NotificationConfiguration : IEntityTypeConfiguration<Notification>
+public async Task<bool> AddResponsibleAsync(Guid incidentId, Guid userId, Guid actorUserId)
 {
-    public void Configure(EntityTypeBuilder<Notification> builder)
+    var incident = await GetIncidentByIdAsync(incidentId);
+    if (incident == null || incident.Status == IncidentStatus.Cerrada) return false;
+
+    var user = await GetUserByIdAsync(userId);
+    if (user == null || user.AreaId != incident.CurrentAreaId) return false;
+
+    var activeResponsibles = await _db.IncidentParticipants
+        .Where(p => p.IncidentId == incidentId && p.Role == IncidentParticipantRole.Responsable && p.RemovedAt == null)
+        .ToListAsync();
+
+    if (activeResponsibles.Any(p => p.SecurityUserId == userId)) return true;
+
+    var actorIsResponsible = activeResponsibles.Any(p => p.SecurityUserId == actorUserId);
+    if (activeResponsibles.Count > 0 && !actorIsResponsible) return false;
+
+    var now = DateTime.Now;
+
+    // FIX: Buscar si el participante ya existe en la base de datos (por ejemplo, con RemovedAt != null)
+    var existingParticipant = await _db.IncidentParticipants
+        .FirstOrDefaultAsync(p => p.IncidentId == incidentId && p.SecurityUserId == userId);
+
+    if (existingParticipant != null)
     {
-        builder.ToTable("notifications");
-
-        builder.HasKey(x => x.Id);
-
-        builder.Property(x => x.Type)
-            .IsRequired()
-            .HasConversion<int>();
-
-        builder.Property(x => x.IsRead)
-            .IsRequired()
-            .HasDefaultValue(false);
-
-        builder.Property(x => x.CreatedAt)
-            .IsRequired();
-
-        // Relación con Recipient (Usuario destinatario)
-        builder.HasOne(x => x.Recipient)
-            .WithMany()
-            .HasForeignKey(x => x.RecipientUserId)
-            .OnDelete(DeleteBehavior.Cascade);
-
-        // Relación con Actor (Usuario emisor)
-        builder.HasOne(x => x.Actor)
-            .WithMany()
-            .HasForeignKey(x => x.ActorUserId)
-            .OnDelete(DeleteBehavior.Restrict);
-
-        // Relación con Comment (Opcional)
-        builder.HasOne(x => x.Comment)
-            .WithMany()
-            .HasForeignKey(x => x.CommentId)
-            .OnDelete(DeleteBehavior.SetNull);
-
-        // Relación con Incident (Opcional)
-        builder.HasOne(x => x.Incident)
-            .WithMany()
-            .HasForeignKey(x => x.IncidentId)
-            .OnDelete(DeleteBehavior.Cascade);
-
-        // Índices
-        builder.HasIndex(x => new { x.RecipientUserId, x.IsRead, x.CreatedAt })
-            .HasDatabaseName("IX_notifications_RecipientUserId_IsRead_CreatedAt");
-
-        builder.HasIndex(x => x.IncidentId)
-            .HasDatabaseName("IX_notifications_IncidentId");
+        // Si ya existía, lo reactivamos y actualizamos su rol y área
+        existingParticipant.Role = IncidentParticipantRole.Responsable;
+        existingParticipant.AreaId = incident.CurrentAreaId;
+        existingParticipant.AssignedAt = now;
+        existingParticipant.RemovedAt = null;
     }
+    else
+    {
+        // Si no existe, agregamos la entidad
+        _db.IncidentParticipants.Add(new IncidentParticipant
+        {
+            Id = Guid.NewGuid(),
+            IncidentId = incidentId,
+            SecurityUserId = userId,
+            AreaId = incident.CurrentAreaId,
+            Role = IncidentParticipantRole.Responsable,
+            AssignedAt = now
+        });
+    }
+
+    if (activeResponsibles.Count == 0 && incident.Status != IncidentStatus.Cerrada)
+    {
+        await CloseTimeSegmentAsync(incidentId, now);
+        _db.IncidentTimeSegments.Add(new IncidentTimeSegment
+        {
+            Id = Guid.NewGuid(),
+            IncidentId = incidentId,
+            AreaId = incident.CurrentAreaId,
+            UserId = userId,
+            StartedAt = now,
+            IsActiveWork = true
+        });
+    }
+
+    incident.UpdatedAt = now;
+
+    var actor = await GetUserByIdAsync(actorUserId);
+    await LogActivityAsync(incidentId, IncidentActivityType.Asignada, actorUserId,
+        $"{actor?.FullName ?? "-"} sumó a {user.FullName} como responsable.", now);
+
+    await _db.SaveChangesAsync();
+
+    var area = await GetAreaByIdAsync(incident.CurrentAreaId);
+    NotifyResponsibleAssigned(incidentId, incident.Code, incident.Title, area?.Name ?? "-",
+        user, actorUserId, actor?.FullName ?? "-", NotificationType.IncidentAssigned);
+
+    return true;
 }
