@@ -1,73 +1,170 @@
-public async Task<bool> AddResponsibleAsync(Guid incidentId, Guid userId, Guid actorUserId)
-{
-    var incident = await GetIncidentByIdAsync(incidentId);
-    if (incident == null || incident.Status == IncidentStatus.Cerrada) return false;
+<table border='0' cellpadding='0' cellspacing='0' width='100%' style='background-color:#f1f5f9;padding:40px 10px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;'>
+  <tr>
+    <td align='center'>
+      <table border='0' cellpadding='0' cellspacing='0' width='580' style='background-color:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 10px 25px -5px rgba(0,0,0,0.08),0 8px 10px -6px rgba(0,0,0,0.01);border:1px solid #e2e8f0;'>
+        <!-- Top Accent Bar -->
+        <tr>
+          <td style='background-color:#3b82f6;height:4px;font-size:0;line-height:0;'>&nbsp;</td>
+        </tr>
+        <!-- Header -->
+        <tr>
+          <td style='background:linear-gradient(135deg,#0f172a 0%,#1e293b 100%);padding:32px 36px;'>
+            <table border='0' cellpadding='0' cellspacing='0' width='100%'>
+              <tr>
+                <td>
+                  <span style='background:rgba(59,130,246,0.15);color:#60a5fa;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;padding:4px 10px;border-radius:20px;border:1px solid rgba(96,165,250,0.3);'>CorpWiki System</span>
+                  <h1 style='margin:12px 0 0 0;color:#ffffff;font-size:22px;font-weight:700;letter-spacing:-0.3px;'>Nueva Colección Asignada</h1>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+        <!-- Content -->
+        <tr>
+          <td style='padding:36px;color:#334155;font-size:14px;line-height:1.6;'>
+            <p style='margin:0 0 16px 0;font-size:15px;color:#0f172a;font-weight:500;'>Estimado(a) usuario(a),</p>
+            <p style='margin:0 0 24px 0;color:#475569;'>Se le ha concedido acceso a una nueva colección documental en la plataforma por parte de <strong style='color:#0f172a;'>|nombreUsuarioQueAnade|</strong>.</p>
+            
+            <!-- Main Highlight Card -->
+            <table border='0' cellpadding='0' cellspacing='0' width='100%' style='background-color:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;margin-bottom:24px;'>
+              <tr>
+                <td style='padding:20px;'>
+                  <table border='0' cellpadding='0' cellspacing='0' width='100%'>
+                    <tr>
+                      <td style='padding-bottom:12px;border-bottom:1px solid #f1f5f9;'>
+                        <span style='font-size:11px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;'>Nombre de la Colección</span>
+                        <div style='font-size:16px;font-weight:700;color:#0f172a;margin-top:2px;'>|nombreColeccion|</div>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td style='padding-top:12px;'>
+                        <table border='0' cellpadding='0' cellspacing='0' width='100%'>
+                          <tr>
+                            <td width='50%'>
+                              <span style='font-size:11px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;'>Rol Permitido</span>
+                              <div style='font-size:13px;font-weight:600;color:#2563eb;margin-top:2px;'>|rol|</div>
+                            </td>
+                            <td width='50%'>
+                              <span style='font-size:11px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;'>Fecha de Acción</span>
+                              <div style='font-size:13px;font-weight:600;color:#334155;margin-top:2px;'>|fecha|</div>
+                            </td>
+                          </tr>
+                        </table>
+                      </td>
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+            </table>
 
-    var user = await GetUserByIdAsync(userId);
-    if (user == null || user.AreaId != incident.CurrentAreaId) return false;
+            <!-- Callout -->
+            <table border='0' cellpadding='0' cellspacing='0' width='100%' style='background-color:#eff6ff;border-left:4px solid #3b82f6;border-radius:0 6px 6px 0;margin-bottom:28px;'>
+              <tr>
+                <td style='padding:14px 16px;color:#1e40af;font-size:13px;'>
+                  <strong>Acceso Inmediato:</strong> Los permisos han sido aplicados automáticamente a su cuenta. Ya puede consultar la documentación vinculada.
+                </td>
+              </tr>
+            </table>
 
-    var activeResponsibles = await _db.IncidentParticipants
-        .Where(p => p.IncidentId == incidentId && p.Role == IncidentParticipantRole.Responsable && p.RemovedAt == null)
-        .ToListAsync();
+            <!-- Footer Meta -->
+            <p style='margin:0;color:#94a3b8;font-size:12px;line-height:1.4;border-top:1px solid #f1f5f9;padding-top:20px;'>
+              Este es un mensaje automático generado por CorpWiki. Por favor, no responda a este correo.
+            </p>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+</table>
 
-    if (activeResponsibles.Any(p => p.SecurityUserId == userId)) return true;
 
-    var actorIsResponsible = activeResponsibles.Any(p => p.SecurityUserId == actorUserId);
-    if (activeResponsibles.Count > 0 && !actorIsResponsible) return false;
 
-    var now = DateTime.Now;
 
-    // FIX: Buscar si el participante ya existe en la base de datos (por ejemplo, con RemovedAt != null)
-    var existingParticipant = await _db.IncidentParticipants
-        .FirstOrDefaultAsync(p => p.IncidentId == incidentId && p.SecurityUserId == userId);
 
-    if (existingParticipant != null)
-    {
-        // Si ya existía, lo reactivamos y actualizamos su rol y área
-        existingParticipant.Role = IncidentParticipantRole.Responsable;
-        existingParticipant.AreaId = incident.CurrentAreaId;
-        existingParticipant.AssignedAt = now;
-        existingParticipant.RemovedAt = null;
-    }
-    else
-    {
-        // Si no existe, agregamos la entidad
-        _db.IncidentParticipants.Add(new IncidentParticipant
-        {
-            Id = Guid.NewGuid(),
-            IncidentId = incidentId,
-            SecurityUserId = userId,
-            AreaId = incident.CurrentAreaId,
-            Role = IncidentParticipantRole.Responsable,
-            AssignedAt = now
-        });
-    }
 
-    if (activeResponsibles.Count == 0 && incident.Status != IncidentStatus.Cerrada)
-    {
-        await CloseTimeSegmentAsync(incidentId, now);
-        _db.IncidentTimeSegments.Add(new IncidentTimeSegment
-        {
-            Id = Guid.NewGuid(),
-            IncidentId = incidentId,
-            AreaId = incident.CurrentAreaId,
-            UserId = userId,
-            StartedAt = now,
-            IsActiveWork = true
-        });
-    }
+<table border='0' cellpadding='0' cellspacing='0' width='100%' style='background-color:#f1f5f9;padding:40px 10px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;'>
+  <tr>
+    <td align='center'>
+      <table border='0' cellpadding='0' cellspacing='0' width='580' style='background-color:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 10px 25px -5px rgba(0,0,0,0.08),0 8px 10px -6px rgba(0,0,0,0.01);border:1px solid #e2e8f0;'>
+        <!-- Top Accent Bar -->
+        <tr>
+          <td style='background-color:#dc2626;height:4px;font-size:0;line-height:0;'>&nbsp;</td>
+        </tr>
+        <!-- Header -->
+        <tr>
+          <td style='background:linear-gradient(135deg,#7f1d1d 0%,#911004 50%,#c01300 100%);padding:32px 36px;'>
+            <table border='0' cellpadding='0' cellspacing='0' width='100%'>
+              <tr>
+                <td>
+                  <span style='background:rgba(255,255,255,0.15);color:#fca5a5;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;padding:4px 10px;border-radius:20px;border:1px solid rgba(252,165,165,0.3);'>Gestión de Incidencias</span>
+                  <h1 style='margin:12px 0 0 0;color:#ffffff;font-size:22px;font-weight:700;letter-spacing:-0.3px;'>Asignación de Responsable</h1>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+        <!-- Content -->
+        <tr>
+          <td style='padding:36px;color:#334155;font-size:14px;line-height:1.6;'>
+            <p style='margin:0 0 16px 0;font-size:15px;color:#0f172a;font-weight:500;'>Estimado(a) usuario(a),</p>
+            <p style='margin:0 0 24px 0;color:#475569;'>Se le ha asignado la responsabilidad principal de la siguiente incidencia por parte de <strong style='color:#0f172a;'>|nombreUsuarioQueAsigna|</strong>.</p>
+            
+            <!-- Code Badge & Details Card -->
+            <table border='0' cellpadding='0' cellspacing='0' width='100%' style='background-color:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;margin-bottom:24px;'>
+              <tr>
+                <td style='padding:20px;'>
+                  <table border='0' cellpadding='0' cellspacing='0' width='100%'>
+                    <tr>
+                      <td style='padding-bottom:14px;border-bottom:1px solid #f1f5f9;'>
+                        <span style='font-size:11px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;'>Código del Ticket</span>
+                        <div style='margin-top:4px;'>
+                          <span style='background-color:#fee2e2;color:#991b1b;font-size:14px;font-weight:700;padding:4px 10px;border-radius:6px;display:inline-block;border:1px solid #fecaca;'>|codigoIncidencia|</span>
+                        </div>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td style='padding:14px 0;border-bottom:1px solid #f1f5f9;'>
+                        <span style='font-size:11px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;'>Título de la Incidencia</span>
+                        <div style='font-size:15px;font-weight:600;color:#0f172a;margin-top:2px;'>|tituloIncidencia|</div>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td style='padding-top:14px;'>
+                        <table border='0' cellpadding='0' cellspacing='0' width='100%'>
+                          <tr>
+                            <td width='50%'>
+                              <span style='font-size:11px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;'>Área Destino</span>
+                              <div style='font-size:13px;font-weight:600;color:#334155;margin-top:2px;'>|areaNombre|</div>
+                            </td>
+                            <td width='50%'>
+                              <span style='font-size:11px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;'>Fecha Asignación</span>
+                              <div style='font-size:13px;font-weight:600;color:#334155;margin-top:2px;'>|fecha|</div>
+                            </td>
+                          </tr>
+                        </table>
+                      </td>
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+            </table>
 
-    incident.UpdatedAt = now;
+            <!-- Alert Box -->
+            <table border='0' cellpadding='0' cellspacing='0' width='100%' style='background-color:#fefce8;border-left:4px solid #eab308;border-radius:0 6px 6px 0;margin-bottom:28px;'>
+              <tr>
+                <td style='padding:14px 16px;color:#854d0e;font-size:13px;'>
+                  <strong>Acción requerida:</strong> Ingrese a la plataforma para registrar las actividades y dar seguimiento al cumplimiento de los tiempos establecidos.
+                </td>
+              </tr>
+            </table>
 
-    var actor = await GetUserByIdAsync(actorUserId);
-    await LogActivityAsync(incidentId, IncidentActivityType.Asignada, actorUserId,
-        $"{actor?.FullName ?? "-"} sumó a {user.FullName} como responsable.", now);
-
-    await _db.SaveChangesAsync();
-
-    var area = await GetAreaByIdAsync(incident.CurrentAreaId);
-    NotifyResponsibleAssigned(incidentId, incident.Code, incident.Title, area?.Name ?? "-",
-        user, actorUserId, actor?.FullName ?? "-", NotificationType.IncidentAssigned);
-
-    return true;
-}
+            <!-- Footer Meta -->
+            <p style='margin:0;color:#94a3b8;font-size:12px;line-height:1.4;border-top:1px solid #f1f5f9;padding-top:20px;'>
+              Este es un mensaje automático generado por CorpWiki. Por favor, no responda a este correo.
+            </p>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+</table>
