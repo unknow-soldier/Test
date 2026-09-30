@@ -1,139 +1,57 @@
-private void NotifyResponsibleAssigned(
-    Guid incidentId, string incidentCode, string incidentTitle, string areaName,
-    SecurityUser target, Guid actorUserId, string actorName, NotificationType notifType)
-{
-    if (target.Id == actorUserId) return; // no notificar cuando alguien se autoasigna
+using CorpWiki.Domain.Entities;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
-    _ = Task.Run(async () =>
+namespace CorpWiki.Infrastructure.Persistence.Configurations;
+
+public class NotificationConfiguration : IEntityTypeConfiguration<Notification>
+{
+    public void Configure(EntityTypeBuilder<Notification> builder)
     {
-        try
-        {
-            await _notificationService.CreateIncidentNotificationAsync(
-                recipientUserId: target.Id,
-                actorUserId: actorUserId,
-                incidentId: incidentId,
-                type: notifType);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error creando notificación in-app de incidencia {Codigo} para {UserId}", incidentCode, target.Id);
-        }
+        builder.ToTable("notifications");
 
-        if (string.IsNullOrWhiteSpace(target.Email)) return;
+        builder.HasKey(x => x.Id);
 
-        try
-        {
-            await _emailSender.EnviarCorreoIncidenciaAsignadaAsync(
-                target.Email, actorName, incidentCode, incidentTitle, areaName,
-                DateTime.Now.ToString("dd/MM/yyyy"));
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error enviando correo de incidencia {Codigo} a {UserId}", incidentCode, target.Id);
-        }
-    });
-}
+        builder.Property(x => x.Type)
+            .IsRequired()
+            .HasConversion<int>();
 
+        builder.Property(x => x.IsRead)
+            .IsRequired()
+            .HasDefaultValue(false);
 
+        builder.Property(x => x.CreatedAt)
+            .IsRequired();
 
+        // Relación con Recipient (Usuario destinatario)
+        builder.HasOne(x => x.Recipient)
+            .WithMany()
+            .HasForeignKey(x => x.RecipientUserId)
+            .OnDelete(DeleteBehavior.Cascade);
 
+        // Relación con Actor (Usuario emisor)
+        builder.HasOne(x => x.Actor)
+            .WithMany()
+            .HasForeignKey(x => x.ActorUserId)
+            .OnDelete(DeleteBehavior.Restrict);
 
+        // Relación con Comment (Opcional)
+        builder.HasOne(x => x.Comment)
+            .WithMany()
+            .HasForeignKey(x => x.CommentId)
+            .OnDelete(DeleteBehavior.SetNull);
 
+        // Relación con Incident (Opcional)
+        builder.HasOne(x => x.Incident)
+            .WithMany()
+            .HasForeignKey(x => x.IncidentId)
+            .OnDelete(DeleteBehavior.Cascade);
 
+        // Índices
+        builder.HasIndex(x => new { x.RecipientUserId, x.IsRead, x.CreatedAt })
+            .HasDatabaseName("IX_notifications_RecipientUserId_IsRead_CreatedAt");
 
-if (initialResponsibleUserId.HasValue)
-{
-    var respUser = await GetUserByIdAsync(initialResponsibleUserId.Value);
-    var area = await GetAreaByIdAsync(areaId);
-    if (respUser != null)
-        NotifyResponsibleAssigned(incident.Id, incident.Code, incident.Title, area?.Name ?? "-",
-            respUser, createdByUserId, creator?.FullName ?? "-", NotificationType.IncidentAssigned);
-}
-
-
-
-
-var area = await GetAreaByIdAsync(incident.CurrentAreaId);
-NotifyResponsibleAssigned(incidentId, incident.Code, incident.Title, area?.Name ?? "-",
-    user, actorUserId, actor?.FullName ?? "-", NotificationType.IncidentAssigned);
-
-
-
-
-
-
-foreach (var u in newUsers)
-    NotifyResponsibleAssigned(incidentId, incident.Code, incident.Title, toArea?.Name ?? "-",
-        u, actorUserId, actor?.FullName ?? "-", NotificationType.IncidentDelegated);
-
-
-
-
-
-using Microsoft.EntityFrameworkCore.Migrations;
-
-#nullable disable
-
-namespace CorpWiki.Infrastructure.Persistence.Migrations
-{
-    public partial class NotificacionesDeIncidencias : Migration
-    {
-        protected override void Up(MigrationBuilder migrationBuilder)
-        {
-            migrationBuilder.Sql(@"
-                DECLARE @tbl sysname;
-                SELECT TOP 1 @tbl = t.name
-                FROM sys.tables t
-                WHERE EXISTS (SELECT 1 FROM sys.columns c WHERE c.object_id = t.object_id AND c.name = 'RecipientUserId')
-                  AND EXISTS (SELECT 1 FROM sys.columns c WHERE c.object_id = t.object_id AND c.name = 'ActorUserId')
-                  AND EXISTS (SELECT 1 FROM sys.columns c WHERE c.object_id = t.object_id AND c.name = 'CommentId');
-
-                IF @tbl IS NULL
-                BEGIN
-                    RAISERROR('No se encontró la tabla de Notification. Revisa el nombre manualmente.', 16, 1);
-                    RETURN;
-                END
-
-                -- 1. CommentId pasa a ser opcional.
-                DECLARE @sqlNullable NVARCHAR(MAX) = N'ALTER TABLE [' + @tbl + N'] ALTER COLUMN [CommentId] uniqueidentifier NULL;';
-                EXEC sp_executesql @sqlNullable;
-
-                -- 2. Agregar IncidentId si no existe.
-                IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(@tbl) AND name = 'IncidentId')
-                BEGIN
-                    DECLARE @sqlAddCol NVARCHAR(MAX) = N'ALTER TABLE [' + @tbl + N'] ADD [IncidentId] uniqueidentifier NULL;';
-                    EXEC sp_executesql @sqlAddCol;
-                END
-
-                -- 3. Índice.
-                IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Notifications_IncidentId')
-                BEGIN
-                    DECLARE @sqlIndex NVARCHAR(MAX) = N'CREATE INDEX IX_Notifications_IncidentId ON [' + @tbl + N']([IncidentId]);';
-                    EXEC sp_executesql @sqlIndex;
-                END
-
-                -- 4. FK hacia Incidents.
-                IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_Notifications_Incidents')
-                BEGIN
-                    DECLARE @sqlFk NVARCHAR(MAX) = N'ALTER TABLE [' + @tbl + N'] ADD CONSTRAINT FK_Notifications_Incidents FOREIGN KEY ([IncidentId]) REFERENCES [Incidents]([Id]);';
-                    EXEC sp_executesql @sqlFk;
-                END
-            ");
-        }
-
-        protected override void Down(MigrationBuilder migrationBuilder)
-        {
-            // Down asume el nombre "Notifications"; ajusta si tu tabla usa otro nombre.
-            migrationBuilder.Sql(@"
-                IF EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_Notifications_Incidents')
-                    ALTER TABLE [Notifications] DROP CONSTRAINT FK_Notifications_Incidents;
-
-                IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Notifications_IncidentId')
-                    DROP INDEX IX_Notifications_IncidentId ON [Notifications];
-
-                IF EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('Notifications') AND name = 'IncidentId')
-                    ALTER TABLE [Notifications] DROP COLUMN [IncidentId];
-            ");
-        }
+        builder.HasIndex(x => x.IncidentId)
+            .HasDatabaseName("IX_notifications_IncidentId");
     }
 }
