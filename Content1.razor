@@ -1,72 +1,139 @@
-// Operación SOAP: CreateMail (colecciones) — Template 003, tal cual como funcionaba originalmente.
-private async Task<EmailSendResult> CreateMailAsync(string destinatario, string listaParametros)
+private void NotifyResponsibleAssigned(
+    Guid incidentId, string incidentCode, string incidentTitle, string areaName,
+    SecurityUser target, Guid actorUserId, string actorName, NotificationType notifType)
 {
-    string soapBody = $"<CreateMail xmlns=\"{SoapNamespace}\">" +
-        $"<Origin>{EscapeXml(_settings.Origin)}</Origin>" +
-        $"<System>{EscapeXml(_settings.System)}</System>" +
-        $"<Template>{EscapeXml(_settings.Template)}</Template>" +
-        $"<Adresses>{EscapeXml(destinatario)}</Adresses>" +
-        $"<ParameterList>{EscapeXml(listaParametros)}</ParameterList>" +
-        $"<HoldMailShipment>{EscapeXml(_settings.HoldMailShipment)}</HoldMailShipment>" +
-        $"</CreateMail>";
+    if (target.Id == actorUserId) return; // no notificar cuando alguien se autoasigna
 
-    return await EnviarYParsearCreateMailAsync(soapBody);
-}
-
-// Operación SOAP: CreateMail (incidencias) — mismo cuerpo exacto, Template propio fijo.
-private async Task<EmailSendResult> CreateMailIncidenciaAsync(string destinatario, string listaParametros)
-{
-    string soapBody = $"<CreateMail xmlns=\"{SoapNamespace}\">" +
-        $"<Origin>{EscapeXml(_settings.Origin)}</Origin>" +
-        $"<System>{EscapeXml(_settings.System)}</System>" +
-        $"<Template>{EscapeXml(_settings.TemplateIncidenciaAsignada)}</Template>" +
-        $"<Adresses>{EscapeXml(destinatario)}</Adresses>" +
-        $"<ParameterList>{EscapeXml(listaParametros)}</ParameterList>" +
-        $"<HoldMailShipment>{EscapeXml(_settings.HoldMailShipment)}</HoldMailShipment>" +
-        $"</CreateMail>";
-
-    return await EnviarYParsearCreateMailAsync(soapBody);
-}
-
-// Parseo de la respuesta, compartido por ambos métodos (esto sí es seguro
-// factorizarlo: ocurre DESPUÉS del envío, no afecta el envelope enviado).
-private async Task<EmailSendResult> EnviarYParsearCreateMailAsync(string soapBody)
-{
-    var (responseXml, rawResponse) = await EnviarSoapRequestAsync(
-        $"{SoapNamespace}CreateMail", soapBody);
-
-    XNamespace ns = SoapNamespace;
-    var createMailResult = responseXml.Descendants(ns + "CreateMailResult").FirstOrDefault();
-
-    string guidCode = createMailResult?.Element(ns + "GUIDCode")?.Value ?? "";
-    string shippingDate = createMailResult?.Element(ns + "ShippingDate")?.Value ?? "";
-
-    var soapFault = responseXml.Descendants(
-        XName.Get("Fault", "http://schemas.xmlsoap.org/soap/envelope/")).FirstOrDefault();
-
-    if (soapFault != null)
+    _ = Task.Run(async () =>
     {
-        string faultString = soapFault.Element("faultstring")?.Value ?? "Error SOAP desconocido";
-        return new EmailSendResult
+        try
         {
-            Exitoso = false,
-            GUIDCode = guidCode,
-            ShippingDate = shippingDate,
-            Mensaje = $"SOAP Fault: {faultString}",
-            RespuestaSoapCruda = rawResponse
-        };
-    }
+            await _notificationService.CreateIncidentNotificationAsync(
+                recipientUserId: target.Id,
+                actorUserId: actorUserId,
+                incidentId: incidentId,
+                type: notifType);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error creando notificación in-app de incidencia {Codigo} para {UserId}", incidentCode, target.Id);
+        }
 
-    bool exitoso = !string.IsNullOrEmpty(guidCode);
+        if (string.IsNullOrWhiteSpace(target.Email)) return;
 
-    return new EmailSendResult
+        try
+        {
+            await _emailSender.EnviarCorreoIncidenciaAsignadaAsync(
+                target.Email, actorName, incidentCode, incidentTitle, areaName,
+                DateTime.Now.ToString("dd/MM/yyyy"));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error enviando correo de incidencia {Codigo} a {UserId}", incidentCode, target.Id);
+        }
+    });
+}
+
+
+
+
+
+
+
+
+if (initialResponsibleUserId.HasValue)
+{
+    var respUser = await GetUserByIdAsync(initialResponsibleUserId.Value);
+    var area = await GetAreaByIdAsync(areaId);
+    if (respUser != null)
+        NotifyResponsibleAssigned(incident.Id, incident.Code, incident.Title, area?.Name ?? "-",
+            respUser, createdByUserId, creator?.FullName ?? "-", NotificationType.IncidentAssigned);
+}
+
+
+
+
+var area = await GetAreaByIdAsync(incident.CurrentAreaId);
+NotifyResponsibleAssigned(incidentId, incident.Code, incident.Title, area?.Name ?? "-",
+    user, actorUserId, actor?.FullName ?? "-", NotificationType.IncidentAssigned);
+
+
+
+
+
+
+foreach (var u in newUsers)
+    NotifyResponsibleAssigned(incidentId, incident.Code, incident.Title, toArea?.Name ?? "-",
+        u, actorUserId, actor?.FullName ?? "-", NotificationType.IncidentDelegated);
+
+
+
+
+
+using Microsoft.EntityFrameworkCore.Migrations;
+
+#nullable disable
+
+namespace CorpWiki.Infrastructure.Persistence.Migrations
+{
+    public partial class NotificacionesDeIncidencias : Migration
     {
-        Exitoso = exitoso,
-        GUIDCode = guidCode,
-        ShippingDate = shippingDate,
-        Mensaje = exitoso
-            ? $"Correo creado y enviado. GUIDCode: {guidCode}"
-            : "CreateMail no retornó GUIDCode. El correo posiblemente no fue creado/enviado.",
-        RespuestaSoapCruda = rawResponse
-    };
+        protected override void Up(MigrationBuilder migrationBuilder)
+        {
+            migrationBuilder.Sql(@"
+                DECLARE @tbl sysname;
+                SELECT TOP 1 @tbl = t.name
+                FROM sys.tables t
+                WHERE EXISTS (SELECT 1 FROM sys.columns c WHERE c.object_id = t.object_id AND c.name = 'RecipientUserId')
+                  AND EXISTS (SELECT 1 FROM sys.columns c WHERE c.object_id = t.object_id AND c.name = 'ActorUserId')
+                  AND EXISTS (SELECT 1 FROM sys.columns c WHERE c.object_id = t.object_id AND c.name = 'CommentId');
+
+                IF @tbl IS NULL
+                BEGIN
+                    RAISERROR('No se encontró la tabla de Notification. Revisa el nombre manualmente.', 16, 1);
+                    RETURN;
+                END
+
+                -- 1. CommentId pasa a ser opcional.
+                DECLARE @sqlNullable NVARCHAR(MAX) = N'ALTER TABLE [' + @tbl + N'] ALTER COLUMN [CommentId] uniqueidentifier NULL;';
+                EXEC sp_executesql @sqlNullable;
+
+                -- 2. Agregar IncidentId si no existe.
+                IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(@tbl) AND name = 'IncidentId')
+                BEGIN
+                    DECLARE @sqlAddCol NVARCHAR(MAX) = N'ALTER TABLE [' + @tbl + N'] ADD [IncidentId] uniqueidentifier NULL;';
+                    EXEC sp_executesql @sqlAddCol;
+                END
+
+                -- 3. Índice.
+                IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Notifications_IncidentId')
+                BEGIN
+                    DECLARE @sqlIndex NVARCHAR(MAX) = N'CREATE INDEX IX_Notifications_IncidentId ON [' + @tbl + N']([IncidentId]);';
+                    EXEC sp_executesql @sqlIndex;
+                END
+
+                -- 4. FK hacia Incidents.
+                IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_Notifications_Incidents')
+                BEGIN
+                    DECLARE @sqlFk NVARCHAR(MAX) = N'ALTER TABLE [' + @tbl + N'] ADD CONSTRAINT FK_Notifications_Incidents FOREIGN KEY ([IncidentId]) REFERENCES [Incidents]([Id]);';
+                    EXEC sp_executesql @sqlFk;
+                END
+            ");
+        }
+
+        protected override void Down(MigrationBuilder migrationBuilder)
+        {
+            // Down asume el nombre "Notifications"; ajusta si tu tabla usa otro nombre.
+            migrationBuilder.Sql(@"
+                IF EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_Notifications_Incidents')
+                    ALTER TABLE [Notifications] DROP CONSTRAINT FK_Notifications_Incidents;
+
+                IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Notifications_IncidentId')
+                    DROP INDEX IX_Notifications_IncidentId ON [Notifications];
+
+                IF EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('Notifications') AND name = 'IncidentId')
+                    ALTER TABLE [Notifications] DROP COLUMN [IncidentId];
+            ");
+        }
+    }
 }
