@@ -1,262 +1,103 @@
-**FREE
-//* ===========================================================
-//* PGUNITCNES - CONSULTA REMESAS EN LINEA UNITELLER
-//* Pantallas : FMTUNITCEL (@CONSULTAR, @BENEFICIA,
-//*             @REMITENTE, @REFERENCI)
-//* Tabla     : BCAH96DTA.UTLRACTA (solo lectura)
-//* Teclas    : F3 Salir | F5 Renovar | F12 Regresar/Cancelar
-//* ===========================================================
+**free
+//--------------------------------------------------------------------
+// CYBE0006PG - Programa de prueba
+// Llama a la COPIA de prueba de la CL (CYBE0006CT) con los mismos
+// 35 parametros y largos que declara CYBE0006CL (&V1 a &V35).
+// Los valores son los que carga CYBE0006C2 (datos de prueba UAT).
+//
+// Compilar:
+//   CRTBNDRPG PGM(CYBERPGM/CYBE0006PG) SRCFILE(CYBERPGM/QRPGLESRC)
+//             SRCMBR(CYBE0006PG)
+// (ajusta el archivo fuente si usas otro)
+//--------------------------------------------------------------------
+ctl-opt dftactgrp(*no) actgrp(*new) option(*srcstmt:*nodebugio);
 
-//* CONFIGURACIONES Y COPYRIGHT
-CTL-OPT
-  OPTION(*NODEBUGIO:*SRCSTMT:*NOUNREF)
-  DFTACTGRP(*NO) ACTGRP(*NEW) DATEDIT(*DMY) DATFMT(*ISO)
-  ALWNULL(*USRCTL)
-  COPYRIGHT('© BANCO DAVIVIENDA HONDURAS S.A.| V1.0.0 20250819 | EXTTCPG01');
+// Prototipo: parametros por referencia, con el largo exacto de la CL
+dcl-pr LlamaCL extpgm('CYBE0006CT');
+  *n char(40);    // V1
+  *n char(20);    // V2
+  *n char(15);    // V3
+  *n char(10);    // V4
+  *n char(80);    // V5
+  *n char(30);    // V6
+  *n char(15);    // V7
+  *n char(15);    // V8
+  *n char(80);    // V9
+  *n char(80);    // V10
+  *n char(5);     // V11
+  *n char(15);    // V12
+  *n char(5);     // V13
+  *n char(30);    // V14
+  *n char(50);    // V15
+  *n char(10);    // V16
+  *n char(30);    // V17
+  *n char(20);    // V18
+  *n char(5);     // V19
+  *n char(20);    // V20
+  *n char(15);    // V21
+  *n char(5);     // V22
+  *n char(15);    // V23
+  *n char(10);    // V24
+  *n char(5);     // V25
+  *n char(15);    // V26
+  *n char(20);    // V27
+  *n char(20);    // V28
+  *n char(20);    // V29
+  *n char(20);    // V30
+  *n char(100);   // V31
+  *n char(20);    // V32
+  *n char(20);    // V33
+  *n char(30);    // V34
+  *n char(150);   // V35
+end-pr;
 
-//* INCLUDES
-/COPY BCAH96/QRPGLESRC,COPYRIGHT
+// Variables (mismos valores que CYBE0006C2)
+dcl-s v1  char(40)  inz('NotificacionEstadoTransaccion');
+dcl-s v2  char(20)  inz('9');
+dcl-s v3  char(15)  inz('1');
+dcl-s v4  char(10)  inz('2');
+dcl-s v5  char(80)  inz('0');
+dcl-s v6  char(30)  inz('PRUEBA110');
+dcl-s v7  char(15)  inz('1');
+dcl-s v8  char(15)  inz('1.0');
+dcl-s v9  char(80)  inz('5850114');
+dcl-s v10 char(80)  inz('h38y');
+dcl-s v11 char(5)   inz('ES');
+dcl-s v12 char(15)  inz('HN');
+dcl-s v13 char(5)   inz('HN');
+dcl-s v14 char(30)  inz('2026280900000');
+dcl-s v15 char(50)  inz('EXECUTED_WITH_REJECTIONS');
+dcl-s v16 char(10)  inz('0');
+dcl-s v17 char(30)  inz('20262809135500000');
+dcl-s v18 char(20)  inz('72271.06');
+dcl-s v19 char(5)   inz('');
+dcl-s v20 char(20)  inz('0');
+dcl-s v21 char(15)  inz('0');
+dcl-s v22 char(5)   inz('HNL');
+dcl-s v23 char(15)  inz('0');
+dcl-s v24 char(10)  inz('0');
+dcl-s v25 char(5)   inz('HNL');
+dcl-s v26 char(15)  inz('');
+dcl-s v27 char(20)  inz('0');
+dcl-s v28 char(20)  inz('0');
+dcl-s v29 char(20)  inz('0');
+dcl-s v30 char(20)  inz('0');
+// TODO: copiar el texto COMPLETO de &V31 desde CYBE0006C2
+//       (en la foto se veia cortado en "APIINFOREC-I")
+dcl-s v31 char(100) inz('Recibo pagado anteriormente (APIINFOREC-I');
+dcl-s v32 char(20)  inz('0');
+dcl-s v33 char(20)  inz('0');
+dcl-s v34 char(30)  inz('');
+dcl-s v35 char(150) inz('');
 
-//* DECLARACION DE ARCHIVOS
-// SFILE queda por herencia de la plantilla (el DDS aun tiene el
-// formato MTCADISFL). No se usa en ninguna de las 4 pantallas.
-DCL-F FMTUNITCEL WORKSTN USAGE(*INPUT:*OUTPUT)
-             SFILE(MTCADISFL:NRR)
-             INDDS(VNDINDIC);
+monitor;
+  LlamaCL( v1 : v2 : v3 : v4 : v5 : v6 : v7 : v8 : v9 : v10 :
+           v11 : v12 : v13 : v14 : v15 : v16 : v17 : v18 : v19 : v20 :
+           v21 : v22 : v23 : v24 : v25 : v26 : v27 : v28 : v29 : v30 :
+           v31 : v32 : v33 : v34 : v35 );
+on-error;
+  dsply 'Error al llamar CYBE0006CT (revisa la lista de bibliotecas)';
+endmon;
 
-//* VARIABLES GLOBALES
-DCL-S NRR ZONED(5:0) INZ(0);
-
-// INDICADORES DE TECLAS (numero de indicador = numero de tecla)
-DCL-DS VNDINDIC QUALIFIED;
-  Salir     IND POS(3);
-  Renovar   IND POS(5);
-  Regresar  IND POS(12);
-END-DS;
-
-//* CONSTANTES - PANTALLAS DEL FLUJO
-DCL-C PAN_SALIR    0;
-DCL-C PAN_CONSULTA 1;
-DCL-C PAN_BENEF    2;
-DCL-C PAN_REMIT    3;
-DCL-C PAN_REFER    4;
-
-//* PROGRAMAS EXTERNOS
-// TRAE EL NOMBRE DEL BANCO
-DCL-PR BCONAMEPGM EXTPGM('BCAH96/BCONAMEPGM');
-  *N CHAR(40);
-END-PR;
-
-//* PROGRAM STATUS
-DCL-DS PGM_STATUS PSDS;
-  PROGRAM CHAR(10) POS(01);
-END-DS;
-
-//* MAINLINE
-EXEC SQL SET OPTION COMMIT = *NONE;
-PRINICIALIZA();
-PRFLUJO();
-*INLR = *ON;
-RETURN;
-
-//* ===========================================================
-//* PROCEDURES
-//* ===========================================================
-
-//* DATOS DE CABECERA (PROGRAMA Y BANCO)
-DCL-PROC PRINICIALIZA;
-  DCL-PI *N; END-PI;
-  DCL-S BCONAME CHAR(40) INZ('');
-
-  CALLP BCONAMEPGM(BCONAME);
-  NOMBCO = BCONAME;
-  NOMPGM = PROGRAM;
-END-PROC;
-
-//* FLUJO PRINCIPAL: cada pantalla devuelve cual sigue
-DCL-PROC PRFLUJO;
-  DCL-PI *N; END-PI;
-  DCL-S pantalla INT(5) INZ(PAN_CONSULTA);
-
-  DOW pantalla <> PAN_SALIR;
-    SELECT;
-      WHEN pantalla = PAN_CONSULTA;
-        pantalla = PRPANCONSULTA();
-      WHEN pantalla = PAN_BENEF;
-        pantalla = PRPANBENEF();
-      WHEN pantalla = PAN_REMIT;
-        pantalla = PRPANREMIT();
-      WHEN pantalla = PAN_REFER;
-        pantalla = PRPANREFER();
-      OTHER;
-        pantalla = PAN_SALIR;
-    ENDSL;
-  ENDDO;
-END-PROC;
-
-//* PANTALLA 1: @CONSULTAR
-DCL-PROC PRPANCONSULTA;
-  DCL-PI *N INT(5); END-PI;
-
-  CLEAR VNDINDIC;
-  EXFMT @CONSULTAR;
-
-  // F3 y F12 salen del programa; F5 limpia la referencia
-  SELECT;
-    WHEN VNDINDIC.Salir OR VNDINDIC.Regresar;
-      RETURN PAN_SALIR;
-    WHEN VNDINDIC.Renovar;
-      REFREMESA = 0;
-      RETURN PAN_CONSULTA;
-  ENDSL;
-
-  // Enter: la referencia debe tener 10 digitos e iniciar con 5
-  IF REFREMESA < 5000000000 OR REFREMESA > 5999999999;
-    PRMENSAJE('REFERENCIA INVALIDA');
-    RETURN PAN_CONSULTA;
-  ENDIF;
-
-  IF PRCARGADATOS();
-    RETURN PAN_BENEF;
-  ENDIF;
-
-  RETURN PAN_CONSULTA;
-END-PROC;
-
-//* PANTALLA 2: @BENEFICIA
-DCL-PROC PRPANBENEF;
-  DCL-PI *N INT(5); END-PI;
-
-  CLEAR VNDINDIC;
-  EXFMT @BENEFICIA;
-
-  SELECT;
-    WHEN VNDINDIC.Salir;
-      RETURN PAN_SALIR;
-    WHEN VNDINDIC.Regresar;
-      RETURN PAN_CONSULTA;
-    WHEN VNDINDIC.Renovar;
-      IF PRCARGADATOS();
-        RETURN PAN_BENEF;
-      ENDIF;
-      RETURN PAN_CONSULTA;
-  ENDSL;
-
-  RETURN PAN_REMIT;
-END-PROC;
-
-//* PANTALLA 3: @REMITENTE
-DCL-PROC PRPANREMIT;
-  DCL-PI *N INT(5); END-PI;
-
-  CLEAR VNDINDIC;
-  EXFMT @REMITENTE;
-
-  SELECT;
-    WHEN VNDINDIC.Salir;
-      RETURN PAN_SALIR;
-    WHEN VNDINDIC.Regresar;
-      RETURN PAN_BENEF;
-    WHEN VNDINDIC.Renovar;
-      IF PRCARGADATOS();
-        RETURN PAN_REMIT;
-      ENDIF;
-      RETURN PAN_CONSULTA;
-  ENDSL;
-
-  RETURN PAN_REFER;
-END-PROC;
-
-//* PANTALLA 4: @REFERENCI
-DCL-PROC PRPANREFER;
-  DCL-PI *N INT(5); END-PI;
-
-  CLEAR VNDINDIC;
-  EXFMT @REFERENCI;
-
-  SELECT;
-    WHEN VNDINDIC.Salir;
-      RETURN PAN_SALIR;
-    WHEN VNDINDIC.Regresar;
-      RETURN PAN_REMIT;
-    WHEN VNDINDIC.Renovar;
-      IF PRCARGADATOS();
-        RETURN PAN_REFER;
-      ENDIF;
-      RETURN PAN_CONSULTA;
-  ENDSL;
-
-  // Enter en la ultima pantalla: nueva consulta
-  RETURN PAN_CONSULTA;
-END-PROC;
-
-//* CARGA LOS DATOS DE LA REFERENCIA (UN SOLO SELECT)
-//* Devuelve *ON si encontro la referencia, *OFF si no.
-DCL-PROC PRCARGADATOS;
-  DCL-PI *N IND; END-PI;
-
-  UPAYERCD = %CHAR(REFREMESA);
-
-  EXEC SQL
-    SELECT COALESCE(USTSREM,  ''),
-           COALESCE(UBENFNAM, ''),
-           COALESCE(UBENMNAM, ''),
-           COALESCE(UBENLNAM, ''),
-           COALESCE(UBEN2NAM, ''),
-           COALESCE(UBENCTRY, ''),
-           COALESCE(UBENSTAT, ''),
-           COALESCE(UBENPOST, ''),
-           COALESCE(UBENPHON, ''),
-           COALESCE(UBENCITY, ''),
-           COALESCE(UBENADR1, ''),
-           COALESCE(UORGCUR,  ''),
-           COALESCE(UORGCNTR, ''),
-           COALESCE(UORGAMT,  ''),
-           COALESCE(USNDFNAM, ''),
-           COALESCE(USNDMNAM, ''),
-           COALESCE(USNDLNAM, ''),
-           COALESCE(USND2NAM, ''),
-           COALESCE(USNDSTAT, ''),
-           COALESCE(USNDPOST, ''),
-           COALESCE(USNDPHON, ''),
-           COALESCE(USNDCITY, ''),
-           COALESCE(USNDADDR, ''),
-           COALESCE(UDATRECI, '')
-      INTO :USTSREM,  :UBENFNAM, :UBENMNAM, :UBENLNAM, :UBEN2NAM,
-           :UBENCTRY, :UBENSTAT, :UBENPOST, :UBENPHON, :UBENCITY,
-           :UBENADR1, :UORGCUR,  :UORGCNTR, :UORGAMT,
-           :USNDFNAM, :USNDMNAM, :USNDLNAM, :USND2NAM,
-           :USNDSTAT, :USNDPOST, :USNDPHON, :USNDCITY, :USNDADDR,
-           :UDATRECI
-      FROM BCAH96DTA.UTLRACTA
-     WHERE UPAYERCD = :UPAYERCD
-     FETCH FIRST 1 ROW ONLY;
-
-  // SQLCODE positivo (excepto 100) es solo aviso, p.ej. texto truncado
-  SELECT;
-    WHEN SQLCODE = 100;
-      PRMENSAJE('REFERENCIA NO EXISTE');
-      RETURN *OFF;
-    WHEN SQLCODE < 0;
-      PRMENSAJE('ERROR SQL ' + %CHAR(SQLCODE));
-      RETURN *OFF;
-  ENDSL;
-
-  // Campos gemelos (sufijo 2): SQL solo llena la variable base
-  UORGCNTR2 = UORGCNTR;
-  UORGCUR2  = UORGCUR;
-  UORGAMT2  = UORGAMT;
-
-  RETURN *ON;
-END-PROC;
-
-//* MUESTRA UN MENSAJE EN LA VENTANA MENSAJE (max. 20 caracteres)
-DCL-PROC PRMENSAJE;
-  DCL-PI *N;
-    pTexto CHAR(20) CONST;
-  END-PI;
-
-  MENSAJERR = pTexto;
-  EXFMT MENSAJE;
-  CLEAR VNDINDIC;
-END-PROC;
+*inlr = *on;
+return;
