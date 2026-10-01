@@ -1,50 +1,552 @@
-<table border="0" cellpadding="0" cellspacing="0" style="background:#f4f6f9; font-family:arial,sans-serif; padding:15px; width:100%">
-  <tbody>
-    <tr>
-      <td>
-        <table border="0" cellpadding="0" cellspacing="0" style="background:#fff; border-radius:6px; overflow:hidden; width:550px">
-          <tbody>
-            <tr>
-              <td style="background:#ED1C24; padding:16px 20px;">
-                <h2 style="margin:0; color:#fff;">DaviWiki</h2>
-                <p style="margin:4px 0 0; color:#fff;">Incidencia Asignada</p>
-              </td>
-            </tr>
-            <tr>
-              <td style="padding:20px;">
-                <p>Estimado(a) usuario(a),</p>
+public async Task<bool> ChangeStatusAsync(Guid incidentId, IncidentStatus newStatus, Guid actorUserId, bool actingAsAdmin = false)
+{
+    if (newStatus != IncidentStatus.EnDesarrollo && newStatus != IncidentStatus.Resuelta) return false;
 
-                <p>[USUARIO] le asignó una incidencia en el área de [AREA].</p>
+    var incident = await GetIncidentByIdAsync(incidentId);
+    if (incident == null || incident.Status == IncidentStatus.Cerrada) return false;
+    if (incident.Status == newStatus) return true;
 
-                <table border="0" cellpadding="6" cellspacing="0" style="background:#f8fafc; border-radius:4px; border:1px solid #e2e8f0; font-size:13px; margin-bottom:15px; width:100%">
-                  <tbody>
-                    <tr>
-                      <td style="width:40%">Código:</td>
-                      <td>[CODIGO]</td>
-                    </tr>
-                    <tr>
-                      <td>Título:</td>
-                      <td>[TITULO]</td>
-                    </tr>
-                    <tr>
-                      <td>Área:</td>
-                      <td>[AREA]</td>
-                    </tr>
-                    <tr>
-                      <td>Fecha:</td>
-                      <td>[FECHA]</td>
-                    </tr>
-                  </tbody>
-                </table>
+    if (!actingAsAdmin)
+    {
+        var isResponsible = await _db.IncidentParticipants.AnyAsync(p =>
+            p.IncidentId == incidentId && p.SecurityUserId == actorUserId &&
+            p.Role == IncidentParticipantRole.Responsable && p.RemovedAt == null);
+        if (!isResponsible) return false;
+    }
 
-                <div style="background:#fdecea;border-left:4px solid #ED1C24;padding:10px;color:#8f1114;margin-bottom:15px;">Ingrese a DaviWiki para revisar el detalle y darle seguimiento.</div>
+    var now = DateTime.Now;
+    var wasResolved = incident.Status == IncidentStatus.Resuelta;
+    incident.Status = newStatus;
+    incident.UpdatedAt = now;
 
-                <p>Mensaje generado automáticamente, no responda a este correo.</p>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </td>
-    </tr>
-  </tbody>
-</table>
+    if (newStatus == IncidentStatus.Resuelta)
+        await CloseTimeSegmentAsync(incidentId, now);
+    else if (wasResolved)
+        await OpenSegmentForCurrentStateAsync(incident, now);
+
+    var actor = await GetUserByIdAsync(actorUserId);
+    await LogActivityAsync(incidentId, IncidentActivityType.CambioEstado, actorUserId,
+        $"{actor?.FullName ?? "-"} cambió el estado a {IncidentLabels.Status(newStatus)}.", now);
+
+    await _db.SaveChangesAsync();
+    return true;
+}
+
+public async Task<bool> CloseIncidentAsync(Guid incidentId, Guid actorUserId, bool actingAsAdmin = false)
+{
+    var incident = await GetIncidentByIdAsync(incidentId);
+    if (incident == null) return false;
+
+    if (!actingAsAdmin)
+    {
+        var isResponsible = await _db.IncidentParticipants.AnyAsync(p =>
+            p.IncidentId == incidentId && p.SecurityUserId == actorUserId &&
+            p.Role == IncidentParticipantRole.Responsable && p.RemovedAt == null);
+        if (!isResponsible) return false;
+    }
+
+    var now = DateTime.Now;
+    await CloseTimeSegmentAsync(incidentId, now);
+
+    incident.Status = IncidentStatus.Cerrada;
+    incident.ClosedAt = now;
+    incident.UpdatedAt = now;
+
+    var actor = await GetUserByIdAsync(actorUserId);
+    await LogActivityAsync(incidentId, IncidentActivityType.Cerrada, actorUserId,
+        $"{actor?.FullName ?? "-"} cerró la incidencia.", now);
+
+    await _db.SaveChangesAsync();
+    return true;
+}
+
+public async Task<bool> ReactivateIncidentAsync(Guid incidentId, Guid actorUserId, bool actingAsAdmin = false)
+{
+    var incident = await GetIncidentByIdAsync(incidentId);
+    if (incident == null) return false;
+    if (!actingAsAdmin && incident.CreatedByUserId != actorUserId) return false;
+    if (incident.Status != IncidentStatus.Cerrada) return false;
+
+    var now = DateTime.Now;
+    incident.Status = IncidentStatus.Reactivada;
+    incident.ClosedAt = null;
+    incident.ReactivationCount++;
+    incident.UpdatedAt = now;
+
+    await OpenSegmentForCurrentStateAsync(incident, now);
+
+    var actor = await GetUserByIdAsync(actorUserId);
+    await LogActivityAsync(incidentId, IncidentActivityType.Reactivada, actorUserId,
+        $"{actor?.FullName ?? "-"} reactivó la incidencia.", now);
+
+    await _db.SaveChangesAsync();
+    return true;
+}
+
+public async Task<bool> AddResponsibleAsync(Guid incidentId, Guid userId, Guid actorUserId, bool actingAsAdmin = false)
+{
+    var incident = await GetIncidentByIdAsync(incidentId);
+    if (incident == null || incident.Status == IncidentStatus.Cerrada) return false;
+
+    var user = await GetUserByIdAsync(userId);
+    if (user == null || user.AreaId != incident.CurrentAreaId) return false; // invariante, no se salta ni para admin
+
+    var activeResponsibles = await _db.IncidentParticipants
+        .Where(p => p.IncidentId == incidentId && p.Role == IncidentParticipantRole.Responsable && p.RemovedAt == null)
+        .ToListAsync();
+
+    if (activeResponsibles.Any(p => p.SecurityUserId == userId)) return true;
+
+    if (!actingAsAdmin)
+    {
+        var actorIsResponsible = activeResponsibles.Any(p => p.SecurityUserId == actorUserId);
+        if (activeResponsibles.Count > 0 && !actorIsResponsible) return false;
+    }
+
+    var now = DateTime.Now;
+
+    _db.IncidentParticipants.Add(new IncidentParticipant
+    {
+        Id = Guid.NewGuid(), IncidentId = incidentId, SecurityUserId = userId,
+        AreaId = incident.CurrentAreaId, Role = IncidentParticipantRole.Responsable, AssignedAt = now
+    });
+
+    if (activeResponsibles.Count == 0 && incident.Status != IncidentStatus.Resuelta)
+    {
+        await CloseTimeSegmentAsync(incidentId, now);
+        _db.IncidentTimeSegments.Add(new IncidentTimeSegment
+        {
+            Id = Guid.NewGuid(), IncidentId = incidentId, AreaId = incident.CurrentAreaId,
+            UserId = userId, StartedAt = now, IsActiveWork = true
+        });
+    }
+
+    incident.UpdatedAt = now;
+
+    var actor = await GetUserByIdAsync(actorUserId);
+    await LogActivityAsync(incidentId, IncidentActivityType.Asignada, actorUserId,
+        $"{actor?.FullName ?? "-"} sumó a {user.FullName} como responsable.", now);
+
+    if (userId != actorUserId)
+        NotifyResponsibleAssigned(incidentId, incident.Code, incident.Title,
+            (await GetAreaByIdAsync(incident.CurrentAreaId))?.Name ?? "-",
+            user, actorUserId, actor?.FullName ?? "-", NotificationType.IncidentAssigned);
+
+    await _db.SaveChangesAsync();
+    return true;
+}
+
+public async Task<bool> RemoveResponsibleAsync(Guid incidentId, Guid userId, Guid actorUserId, bool actingAsAdmin = false)
+{
+    if (!actingAsAdmin && userId != actorUserId) return false;
+
+    var participant = await _db.IncidentParticipants.FirstOrDefaultAsync(p =>
+        p.IncidentId == incidentId && p.SecurityUserId == userId &&
+        p.Role == IncidentParticipantRole.Responsable && p.RemovedAt == null);
+    if (participant == null) return false;
+
+    var now = DateTime.Now;
+    participant.RemovedAt = now;
+
+    var incident = await GetIncidentByIdAsync(incidentId);
+    if (incident != null)
+    {
+        incident.UpdatedAt = now;
+
+        var remaining = await _db.IncidentParticipants.CountAsync(p =>
+            p.IncidentId == incidentId && p.Role == IncidentParticipantRole.Responsable &&
+            p.RemovedAt == null && p.Id != participant.Id);
+
+        if (remaining == 0 && incident.Status != IncidentStatus.Resuelta)
+        {
+            await CloseTimeSegmentAsync(incidentId, now);
+            _db.IncidentTimeSegments.Add(new IncidentTimeSegment
+            {
+                Id = Guid.NewGuid(), IncidentId = incidentId, AreaId = incident.CurrentAreaId,
+                UserId = null, StartedAt = now, IsActiveWork = false
+            });
+        }
+    }
+
+    var user = await GetUserByIdAsync(userId);
+    var actor = await GetUserByIdAsync(actorUserId);
+    await LogActivityAsync(incidentId, IncidentActivityType.Desresponsabilizada, actorUserId,
+        $"{(actingAsAdmin && userId != actorUserId ? $"{actor?.FullName ?? "-"} quitó a {user?.FullName ?? "-"} como" : $"{user?.FullName ?? "-"} se desresponsabilizó de la")} incidencia.", now);
+
+    await _db.SaveChangesAsync();
+    return true;
+}
+
+public async Task<bool> DelegateToAreaAsync(Guid incidentId, Guid toAreaId, List<Guid> newResponsibleUserIds, string reason, Guid actorUserId, bool actingAsAdmin = false)
+{
+    if (newResponsibleUserIds == null || newResponsibleUserIds.Count == 0) return false;
+
+    var incident = await GetIncidentByIdAsync(incidentId);
+    if (incident == null) return false;
+
+    var activeResponsibles = await _db.IncidentParticipants
+        .Where(p => p.IncidentId == incidentId && p.Role == IncidentParticipantRole.Responsable && p.RemovedAt == null)
+        .ToListAsync();
+
+    if (!actingAsAdmin && !activeResponsibles.Any(p => p.SecurityUserId == actorUserId)) return false;
+
+    var newUsers = new List<SecurityUser>();
+    foreach (var uid in newResponsibleUserIds.Distinct())
+    {
+        var u = await GetUserByIdAsync(uid);
+        if (u == null || u.AreaId != toAreaId) return false; // invariante, no se salta ni para admin
+        newUsers.Add(u);
+    }
+
+    var now = DateTime.Now;
+    await CloseTimeSegmentAsync(incidentId, now);
+
+    foreach (var p in activeResponsibles)
+        p.RemovedAt = now;
+
+    var fromArea = await GetAreaByIdAsync(incident.CurrentAreaId);
+    var toArea = await GetAreaByIdAsync(toAreaId);
+
+    _db.IncidentTransfers.Add(new IncidentTransfer
+    {
+        Id = Guid.NewGuid(), IncidentId = incidentId,
+        FromUserId = actorUserId, ToUserId = newUsers[0].Id,
+        FromAreaId = incident.CurrentAreaId, ToAreaId = toAreaId,
+        Reason = string.IsNullOrWhiteSpace(reason) ? "Sin motivo especificado." : reason.Trim(),
+        TransferredAt = now
+    });
+
+    incident.CurrentAreaId = toAreaId;
+    incident.Status = IncidentStatus.EnDesarrollo;
+    incident.UpdatedAt = now;
+
+    foreach (var u in newUsers)
+    {
+        _db.IncidentParticipants.Add(new IncidentParticipant
+        {
+            Id = Guid.NewGuid(), IncidentId = incidentId, SecurityUserId = u.Id,
+            AreaId = toAreaId, Role = IncidentParticipantRole.Responsable, AssignedAt = now
+        });
+    }
+
+    _db.IncidentTimeSegments.Add(new IncidentTimeSegment
+    {
+        Id = Guid.NewGuid(), IncidentId = incidentId, AreaId = toAreaId,
+        UserId = newUsers[0].Id, StartedAt = now, IsActiveWork = true
+    });
+
+    var actor = await GetUserByIdAsync(actorUserId);
+    var names = string.Join(", ", newUsers.Select(u => u.FullName));
+    await LogActivityAsync(incidentId, IncidentActivityType.Transferida, actorUserId,
+        $"{actor?.FullName ?? "-"} reenvió la incidencia de {fromArea?.Name ?? "-"} a {toArea?.Name ?? "-"} (nuevo(s) responsable(s): {names}).", now);
+
+    foreach (var u in newUsers)
+        NotifyResponsibleAssigned(incidentId, incident.Code, incident.Title, toArea?.Name ?? "-",
+            u, actorUserId, actor?.FullName ?? "-", NotificationType.IncidentDelegated);
+
+    await _db.SaveChangesAsync();
+    return true;
+}
+
+
+
+
+
+
+
+
+
+private async Task<double> AverageHoursForAreaAsync(Guid areaId, List<Guid>? restrictToIncidentIds = null)
+{
+    var query = _db.IncidentTimeSegments.Where(s => s.AreaId == areaId);
+    if (restrictToIncidentIds != null) query = query.Where(s => restrictToIncidentIds.Contains(s.IncidentId));
+    var segments = await query.ToListAsync();
+    return segments.Count > 0 ? segments.Average(s => s.Duration.TotalHours) : 0;
+}
+
+public async Task<IncidentKpiSnapshotDto> GetKpiSnapshotAsync(Guid? onlyForUserId = null)
+{
+    List<Guid>? accessibleIds = onlyForUserId.HasValue ? await GetAccessibleIncidentIdsAsync(onlyForUserId.Value) : null;
+
+    var query = _db.Incidents.AsQueryable();
+    if (accessibleIds != null) query = query.Where(i => accessibleIds.Contains(i.Id));
+    var incidents = await query.ToListAsync();
+
+    var active = incidents.Where(i => i.Status != IncidentStatus.Cerrada).ToList();
+    var closed = incidents.Where(i => i.Status == IncidentStatus.Cerrada).ToList();
+
+    var avgResolutionHours = closed.Count > 0
+        ? closed.Average(i => (i.ClosedAt!.Value - i.CreatedAt).TotalHours)
+        : 0;
+
+    double avgDeadHours = 0;
+    if (incidents.Count > 0)
+    {
+        var totalDead = 0.0;
+        foreach (var i in incidents) totalDead += (await ComputeHoursAsync(i.Id)).DeadHours;
+        avgDeadHours = totalDead / incidents.Count;
+    }
+
+    var loadByArea = await GetLoadByAreaAsync(onlyForUserId);
+    var loadByResponsible = await GetLoadByResponsibleAsync(onlyForUserId);
+    var areas = await GetAreasAsync();
+
+    var avgTimeByArea = new List<AreaAvgTimeDto>();
+    foreach (var area in areas)
+    {
+        avgTimeByArea.Add(new AreaAvgTimeDto
+        {
+            AreaName = area.Name, AreaColor = area.Color,
+            AvgHours = Math.Round(await AverageHoursForAreaAsync(area.Id, accessibleIds), 1)
+        });
+    }
+
+    return new IncidentKpiSnapshotDto
+    {
+        ActiveCount = active.Count,
+        ClosedCount = closed.Count,
+        ReactivatedCount = incidents.Count(i => i.ReactivationCount > 0),
+        AvgResolutionHours = Math.Round(avgResolutionHours, 1),
+        AvgDeadHours = Math.Round(avgDeadHours, 1),
+        TopAreaByLoad = loadByArea.OrderByDescending(a => a.Count).FirstOrDefault(),
+        TopResponsible = loadByResponsible.OrderByDescending(r => r.Count).FirstOrDefault(),
+        LoadByArea = loadByArea.ToList(),
+        LoadByResponsible = loadByResponsible.ToList(),
+        StatusDistribution = Enum.GetValues<IncidentStatus>()
+            .Select(s => new StatusCountDto { Status = s, Count = incidents.Count(i => i.Status == s) })
+            .Where(d => d.Count > 0).ToList(),
+        PriorityDistribution = Enum.GetValues<IncidentPriority>()
+            .Select(p => new PriorityCountDto { Priority = p, Count = incidents.Count(i => i.Priority == p) })
+            .Where(d => d.Count > 0).ToList(),
+        AvgTimeByArea = avgTimeByArea
+    };
+}
+
+public async Task<IReadOnlyList<AreaLoadDto>> GetLoadByAreaAsync(Guid? onlyForUserId = null)
+{
+    List<Guid>? accessibleIds = onlyForUserId.HasValue ? await GetAccessibleIncidentIdsAsync(onlyForUserId.Value) : null;
+    var areas = await _db.Areas.ToListAsync();
+    var result = new List<AreaLoadDto>();
+
+    foreach (var area in areas)
+    {
+        var q = _db.Incidents.Where(i => i.CurrentAreaId == area.Id && i.Status != IncidentStatus.Cerrada);
+        if (accessibleIds != null) q = q.Where(i => accessibleIds.Contains(i.Id));
+        result.Add(new AreaLoadDto { AreaName = area.Name, AreaColor = area.Color, Count = await q.CountAsync() });
+    }
+
+    return result.OrderByDescending(a => a.Count).ToList();
+}
+
+public async Task<IReadOnlyList<ResponsibleLoadDto>> GetLoadByResponsibleAsync(Guid? onlyForUserId = null)
+{
+    var activeQuery = _db.IncidentParticipants
+        .Where(p => p.Role == IncidentParticipantRole.Responsable && p.RemovedAt == null);
+
+    if (onlyForUserId.HasValue)
+    {
+        var accessibleIds = await GetAccessibleIncidentIdsAsync(onlyForUserId.Value);
+        activeQuery = activeQuery.Where(p => accessibleIds.Contains(p.IncidentId));
+    }
+
+    var grouped = await activeQuery
+        .Join(_db.Incidents.Where(i => i.Status != IncidentStatus.Cerrada),
+            p => p.IncidentId, i => i.Id, (p, i) => p.SecurityUserId)
+        .GroupBy(uid => uid)
+        .Select(g => new { UserId = g.Key, Count = g.Count() })
+        .OrderByDescending(g => g.Count)
+        .Take(10)
+        .ToListAsync();
+
+    var result = new List<ResponsibleLoadDto>();
+    foreach (var g in grouped)
+    {
+        var user = await GetUserByIdAsync(g.UserId);
+        result.Add(new ResponsibleLoadDto { UserName = user?.FullName ?? "-", Initials = GetInitials(user?.FullName), Count = g.Count });
+    }
+    return result;
+}
+
+public async Task<IReadOnlyList<IncidentActivityFeedDto>> GetRecentActivityAsync(int take = 12, Guid? onlyForUserId = null)
+{
+    var query = _db.IncidentActivityEntries.AsQueryable();
+    if (onlyForUserId.HasValue)
+    {
+        var accessibleIds = await GetAccessibleIncidentIdsAsync(onlyForUserId.Value);
+        query = query.Where(a => accessibleIds.Contains(a.IncidentId));
+    }
+
+    var entries = await query.OrderByDescending(a => a.OccurredAt).Take(take).ToListAsync();
+    var result = new List<IncidentActivityFeedDto>();
+
+    foreach (var a in entries)
+    {
+        var incident = await GetIncidentByIdAsync(a.IncidentId);
+        var actor = await GetUserByIdAsync(a.ActorUserId);
+        result.Add(new IncidentActivityFeedDto
+        {
+            Id = a.Id, IncidentId = a.IncidentId,
+            IncidentCode = incident?.Code ?? "-", IncidentTitle = incident?.Title ?? "-",
+            Type = a.Type, ActorName = actor?.FullName ?? "-",
+            Description = a.Description, OccurredAt = a.OccurredAt
+        });
+    }
+    return result;
+}
+
+
+
+
+
+if (!_isAdmin)
+    _all = _all.Where(i => i.EverResponsibleUserIds.Contains(_me) || i.CreatedByUserId == _me).ToList();
+
+
+
+
+
+private bool _isAdmin;
+private Guid _me;
+
+protected override async Task OnInitializedAsync()
+{
+    _isAdmin = await Security.IsAdminAsync();
+    _me = await Security.GetCurrentUserIdAsync();
+
+    _areas = await Incidents.GetAreasAsync();
+    _users = await Incidents.GetUsersAsync();
+    _kpi = await Incidents.GetKpiSnapshotAsync(_isAdmin ? null : _me);
+    _recentActivity = await Incidents.GetRecentActivityAsync(12, _isAdmin ? null : _me);
+    _totalIncidents = _kpi.StatusDistribution.Sum(s => s.Count);
+    // ... resto igual
+}
+
+
+
+@if (!_isAdmin)
+{
+    <p class="form-hint" style="margin-bottom: var(--space-4);">
+        <Icon Name="info" /> Estos indicadores reflejan solo tus incidencias.
+    </p>
+}
+
+
+
+
+
+private bool _isAdmin;
+private bool _accessDenied;
+
+
+
+
+protected override async Task OnParametersSetAsync()
+{
+    _currentUserId = await Security.GetCurrentUserIdAsync();
+    _isAdmin = await Security.IsAdminAsync();
+    _areas = (await Incidents.GetAreasAsync()).ToList();
+
+    _accessDenied = false;
+    if (!_isAdmin && !await Incidents.CanUserAccessIncidentAsync(Id, _currentUserId))
+    {
+        _accessDenied = true;
+        _detail = null;
+        return;
+    }
+
+    await LoadDetail();
+}
+
+
+
+
+
+
+@if (_accessDenied)
+{
+    <div class="empty-state">
+        <Icon Name="lock" Class="empty-state__icon" />
+        <h2>No tienes acceso a esta incidencia</h2>
+        <p>Solo puedes ver incidencias que reportaste, o en las que eres o fuiste responsable.</p>
+        <a class="btn btn--primary" href="/incidencias/listado">Ver mis incidencias</a>
+    </div>
+}
+else if (_detail is null)
+{
+    @* ... bloque existente de "Incidencia no encontrada" ... *@
+}
+else
+{
+    @* ... resto de la página ... *@
+}
+
+
+
+
+
+
+@* Header: botón Cerrar *@
+@if (_detail.Status != IncidentStatus.Cerrada && (IsCurrentUserResponsible || _isAdmin))
+
+@* Header: botón Reactivar *@
+else if (_detail.Status == IncidentStatus.Cerrada && (IsCurrentUserCreator || _isAdmin))
+
+@* Aviso de "solo responsables pueden..." en Gestión *@
+@if (!IsCurrentUserResponsible && !_isAdmin && _detail.Status != IncidentStatus.Cerrada)
+
+@* Card "Sumar responsable" y "Estado" y "Reenviar a otra área" *@
+@if (_detail.Status != IncidentStatus.Cerrada && (IsCurrentUserResponsible || _isAdmin))
+
+
+
+
+
+
+private async Task TakeAction()
+{
+    if (_detail is null) return;
+    var ok = await Incidents.AddResponsibleAsync(_detail.Id, _currentUserId, ActorId, _isAdmin);
+    // ... resto igual
+}
+
+private async Task AddResponsibleAction()
+{
+    if (!_addResponsibleUserId.HasValue || _detail is null) return;
+    var ok = await Incidents.AddResponsibleAsync(_detail.Id, _addResponsibleUserId.Value, ActorId, _isAdmin);
+    // ... resto igual
+}
+
+private async Task RemoveResponsibleAction()
+{
+    if (_detail is null) return;
+    var ok = await Incidents.RemoveResponsibleAsync(_detail.Id, _currentUserId, ActorId, _isAdmin);
+    // ... resto igual
+}
+
+private async Task DelegateAction()
+{
+    if (_detail is null || !_delegateAreaId.HasValue || _delegateUserIds.Count == 0) return;
+    var ok = await Incidents.DelegateToAreaAsync(_detail.Id, _delegateAreaId.Value, _delegateUserIds.ToList(), _delegateReason, ActorId, _isAdmin);
+    // ... resto igual
+}
+
+private async Task SetStatusAction(IncidentStatus status)
+{
+    if (_detail is null) return;
+    var ok = await Incidents.ChangeStatusAsync(_detail.Id, status, ActorId, _isAdmin);
+    // ... resto igual
+}
+
+private async Task CloseIncidentAction()
+{
+    if (_detail is null) return;
+    var ok = await Incidents.CloseIncidentAsync(_detail.Id, ActorId, _isAdmin);
+    // ... resto igual
+}
+
+private async Task ReactivateAction()
+{
+    if (_detail is null) return;
+    var ok = await Incidents.ReactivateIncidentAsync(_detail.Id, ActorId, _isAdmin);
+    // ... resto igual
+}
