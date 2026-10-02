@@ -1,63 +1,7 @@
-public async Task<bool> DeleteIncidentAsync(Guid incidentId, Guid actorUserId, bool actingAsAdmin = false)
-{
-    await using var db = await _dbFactory.CreateDbContextAsync();
-    
-    // 1. Obtener la estrategia de ejecución
-    var strategy = db.Database.CreateExecutionStrategy();
+builder.Property(e => e.OldValue)
+       .HasColumnType("nvarchar(max)")
+       .IsRequired(false);
 
-    // 2. Envolver la transacción dentro de ExecuteAsync
-    return await strategy.ExecuteAsync(async () =>
-    {
-        await using var transaction = await db.Database.BeginTransactionAsync();
-        
-        try
-        {
-            var incident = await db.Incidents.FirstOrDefaultAsync(i => i.Id == incidentId);
-            if (incident == null) 
-            { 
-                await transaction.RollbackAsync(); 
-                return false; 
-            }
-
-            if (!actingAsAdmin)
-            {
-                var wasResponsible = await db.IncidentParticipants.AnyAsync(p =>
-                    p.IncidentId == incidentId && p.SecurityUserId == actorUserId &&
-                    p.Role == IncidentParticipantRole.Responsable);
-                
-                if (!wasResponsible) 
-                { 
-                    await transaction.RollbackAsync(); 
-                    return false; 
-                }
-            }
-
-            // Las Notifications referencian IncidentId sin cascada (para no perder 
-            // historial de notificaciones "huérfanas" por accidente); hay que
-            // limpiarlas explícitamente antes de poder borrar la incidencia.
-            await db.Notifications.Where(n => n.IncidentId == incidentId).ExecuteDeleteAsync();
-
-            // El resto tiene ON DELETE CASCADE configurado, pero se borra explícito
-            // para no depender de que la cascada física esté realmente aplicada.
-            await db.IncidentArticleLinks.Where(l => l.IncidentId == incidentId).ExecuteDeleteAsync();
-            await db.IncidentTimeSegments.Where(s => s.IncidentId == incidentId).ExecuteDeleteAsync();
-            await db.IncidentActivityEntries.Where(a => a.IncidentId == incidentId).ExecuteDeleteAsync();
-            await db.IncidentTransfers.Where(t => t.IncidentId == incidentId).ExecuteDeleteAsync();
-            await db.IncidentAttachments.Where(a => a.IncidentId == incidentId).ExecuteDeleteAsync();
-            await db.IncidentComments.Where(c => c.IncidentId == incidentId).ExecuteDeleteAsync();
-            await db.IncidentParticipants.Where(p => p.IncidentId == incidentId).ExecuteDeleteAsync();
-
-            db.Incidents.Remove(incident);
-            await db.SaveChangesAsync();
-
-            await transaction.CommitAsync();
-            return true;
-        }
-        catch (Exception ex)
-        {
-            await transaction.RollbackAsync();
-            _logger.LogError(ex, "Error eliminando incidencia {IncidentId}", incidentId);
-            return false;
-        }
-    });
-}
+builder.Property(e => e.NewValue)
+       .HasColumnType("nvarchar(max)")
+       .IsRequired(false);
