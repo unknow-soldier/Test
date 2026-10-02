@@ -1,552 +1,1135 @@
-public async Task<bool> ChangeStatusAsync(Guid incidentId, IncidentStatus newStatus, Guid actorUserId, bool actingAsAdmin = false)
+using CorpWiki.Application.DTOs.Incidents;
+using CorpWiki.Application.Helpers;
+using CorpWiki.Application.Interfaces;
+using CorpWiki.Domain.Entities;
+using CorpWiki.Domain.Entities.Incidents;
+using CorpWiki.Domain.Entities.Security;
+using CorpWiki.Infrastructure.Persistence;
+using Microsoft.EntityFrameworkCore;
+
+namespace CorpWiki.Infrastructure.Services;
+
+public class IncidentService : IIncidentService
 {
-    if (newStatus != IncidentStatus.EnDesarrollo && newStatus != IncidentStatus.Resuelta) return false;
+    private readonly IDbContextFactory<DaviWikiDbContext> _dbFactory;
+    private readonly IEmailSenderService _emailSender;
+    private readonly INotificationService _notificationService;
+    private readonly ILogger<IncidentService> _logger;
 
-    var incident = await GetIncidentByIdAsync(incidentId);
-    if (incident == null || incident.Status == IncidentStatus.Cerrada) return false;
-    if (incident.Status == newStatus) return true;
-
-    if (!actingAsAdmin)
+    public IncidentService(
+        IDbContextFactory<DaviWikiDbContext> dbFactory,
+        IEmailSenderService emailSender,
+        INotificationService notificationService,
+        ILogger<IncidentService> logger)
     {
-        var isResponsible = await _db.IncidentParticipants.AnyAsync(p =>
-            p.IncidentId == incidentId && p.SecurityUserId == actorUserId &&
-            p.Role == IncidentParticipantRole.Responsable && p.RemovedAt == null);
-        if (!isResponsible) return false;
+        _dbFactory = dbFactory;
+        _emailSender = emailSender;
+        _notificationService = notificationService;
+        _logger = logger;
     }
 
-    var now = DateTime.Now;
-    var wasResolved = incident.Status == IncidentStatus.Resuelta;
-    incident.Status = newStatus;
-    incident.UpdatedAt = now;
+    // =========================================================================
+    // ÁREAS / USUARIOS
+    // =========================================================================
 
-    if (newStatus == IncidentStatus.Resuelta)
-        await CloseTimeSegmentAsync(incidentId, now);
-    else if (wasResolved)
-        await OpenSegmentForCurrentStateAsync(incident, now);
-
-    var actor = await GetUserByIdAsync(actorUserId);
-    await LogActivityAsync(incidentId, IncidentActivityType.CambioEstado, actorUserId,
-        $"{actor?.FullName ?? "-"} cambió el estado a {IncidentLabels.Status(newStatus)}.", now);
-
-    await _db.SaveChangesAsync();
-    return true;
-}
-
-public async Task<bool> CloseIncidentAsync(Guid incidentId, Guid actorUserId, bool actingAsAdmin = false)
-{
-    var incident = await GetIncidentByIdAsync(incidentId);
-    if (incident == null) return false;
-
-    if (!actingAsAdmin)
+    public async Task<IReadOnlyList<Area>> GetAreasAsync()
     {
-        var isResponsible = await _db.IncidentParticipants.AnyAsync(p =>
-            p.IncidentId == incidentId && p.SecurityUserId == actorUserId &&
-            p.Role == IncidentParticipantRole.Responsable && p.RemovedAt == null);
-        if (!isResponsible) return false;
+        await using var db = await _dbFactory.CreateDbContextAsync();
+        return await db.Areas.OrderBy(a => a.Name).ToListAsync();
     }
 
-    var now = DateTime.Now;
-    await CloseTimeSegmentAsync(incidentId, now);
-
-    incident.Status = IncidentStatus.Cerrada;
-    incident.ClosedAt = now;
-    incident.UpdatedAt = now;
-
-    var actor = await GetUserByIdAsync(actorUserId);
-    await LogActivityAsync(incidentId, IncidentActivityType.Cerrada, actorUserId,
-        $"{actor?.FullName ?? "-"} cerró la incidencia.", now);
-
-    await _db.SaveChangesAsync();
-    return true;
-}
-
-public async Task<bool> ReactivateIncidentAsync(Guid incidentId, Guid actorUserId, bool actingAsAdmin = false)
-{
-    var incident = await GetIncidentByIdAsync(incidentId);
-    if (incident == null) return false;
-    if (!actingAsAdmin && incident.CreatedByUserId != actorUserId) return false;
-    if (incident.Status != IncidentStatus.Cerrada) return false;
-
-    var now = DateTime.Now;
-    incident.Status = IncidentStatus.Reactivada;
-    incident.ClosedAt = null;
-    incident.ReactivationCount++;
-    incident.UpdatedAt = now;
-
-    await OpenSegmentForCurrentStateAsync(incident, now);
-
-    var actor = await GetUserByIdAsync(actorUserId);
-    await LogActivityAsync(incidentId, IncidentActivityType.Reactivada, actorUserId,
-        $"{actor?.FullName ?? "-"} reactivó la incidencia.", now);
-
-    await _db.SaveChangesAsync();
-    return true;
-}
-
-public async Task<bool> AddResponsibleAsync(Guid incidentId, Guid userId, Guid actorUserId, bool actingAsAdmin = false)
-{
-    var incident = await GetIncidentByIdAsync(incidentId);
-    if (incident == null || incident.Status == IncidentStatus.Cerrada) return false;
-
-    var user = await GetUserByIdAsync(userId);
-    if (user == null || user.AreaId != incident.CurrentAreaId) return false; // invariante, no se salta ni para admin
-
-    var activeResponsibles = await _db.IncidentParticipants
-        .Where(p => p.IncidentId == incidentId && p.Role == IncidentParticipantRole.Responsable && p.RemovedAt == null)
-        .ToListAsync();
-
-    if (activeResponsibles.Any(p => p.SecurityUserId == userId)) return true;
-
-    if (!actingAsAdmin)
+    public async Task<Area?> GetAreaByIdAsync(Guid id)
     {
-        var actorIsResponsible = activeResponsibles.Any(p => p.SecurityUserId == actorUserId);
-        if (activeResponsibles.Count > 0 && !actorIsResponsible) return false;
+        await using var db = await _dbFactory.CreateDbContextAsync();
+        return await db.Areas.FirstOrDefaultAsync(a => a.Id == id);
     }
 
-    var now = DateTime.Now;
-
-    _db.IncidentParticipants.Add(new IncidentParticipant
+    public async Task<IReadOnlyList<SecurityUser>> GetUsersAsync()
     {
-        Id = Guid.NewGuid(), IncidentId = incidentId, SecurityUserId = userId,
-        AreaId = incident.CurrentAreaId, Role = IncidentParticipantRole.Responsable, AssignedAt = now
-    });
+        await using var db = await _dbFactory.CreateDbContextAsync();
+        return await db.SecurityUsers.Where(u => u.IsActive).OrderBy(u => u.FullName).ToListAsync();
+    }
 
-    if (activeResponsibles.Count == 0 && incident.Status != IncidentStatus.Resuelta)
+    public async Task<IReadOnlyList<SecurityUser>> GetUsersByAreaAsync(Guid areaId)
     {
-        await CloseTimeSegmentAsync(incidentId, now);
-        _db.IncidentTimeSegments.Add(new IncidentTimeSegment
+        await using var db = await _dbFactory.CreateDbContextAsync();
+        return await db.SecurityUsers.Where(u => u.IsActive && u.AreaId == areaId)
+            .OrderBy(u => u.FullName).ToListAsync();
+    }
+
+    public async Task<SecurityUser?> GetUserByIdAsync(Guid id)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync();
+        return await db.SecurityUsers.FirstOrDefaultAsync(u => u.Id == id);
+    }
+
+    // =========================================================================
+    // LECTURA
+    // =========================================================================
+
+    public async Task<IReadOnlyList<Incident>> GetIncidentsAsync()
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync();
+        return await db.Incidents.OrderByDescending(i => i.UpdatedAt).ToListAsync();
+    }
+
+    public async Task<Incident?> GetIncidentByIdAsync(Guid id)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync();
+        return await db.Incidents.FirstOrDefaultAsync(i => i.Id == id);
+    }
+
+    public async Task<IReadOnlyList<IncidentSummaryDto>> GetIncidentSummariesAsync()
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync();
+        var incidents = await db.Incidents.OrderByDescending(i => i.UpdatedAt).ToListAsync();
+
+        var result = new List<IncidentSummaryDto>();
+        foreach (var incident in incidents)
+            result.Add(await ToSummaryDtoAsync(db, incident));
+
+        return result;
+    }
+
+    public async Task<IncidentDetailDto?> GetIncidentDetailAsync(Guid id)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync();
+
+        var incident = await db.Incidents.FirstOrDefaultAsync(i => i.Id == id);
+        if (incident == null) return null;
+
+        var (activeHours, deadHours) = await ComputeHoursAsync(db, id);
+        var area = await db.Areas.FirstOrDefaultAsync(a => a.Id == incident.CurrentAreaId);
+        var originArea = await db.Areas.FirstOrDefaultAsync(a => a.Id == incident.OriginAreaId);
+        var creator = await db.SecurityUsers.FirstOrDefaultAsync(u => u.Id == incident.CreatedByUserId);
+        var responsibles = await GetResponsiblesInternalAsync(db, id);
+
+        var comments = await db.IncidentComments.Where(c => c.IncidentId == id).ToListAsync();
+        var transfers = await db.IncidentTransfers.Where(t => t.IncidentId == id).ToListAsync();
+        var activity = await db.IncidentActivityEntries.Where(a => a.IncidentId == id).ToListAsync();
+        var attachments = await db.IncidentAttachments.Where(a => a.IncidentId == id).ToListAsync();
+        var relatedArticles = await db.IncidentArticleLinks.Where(l => l.IncidentId == id)
+            .Include(l => l.Article).Select(l => l.Article).ToListAsync();
+        var segments = await db.IncidentTimeSegments.Where(s => s.IncidentId == id).OrderBy(s => s.StartedAt).ToListAsync();
+        var participantRows = await db.IncidentParticipants.Where(p => p.IncidentId == id)
+            .Include(p => p.SecurityUser).Include(p => p.Area).OrderBy(p => p.AssignedAt).ToListAsync();
+
+        var commentDtos = new List<IncidentCommentDto>();
+        foreach (var c in comments.OrderBy(c => c.CreatedAt))
+            commentDtos.Add(await ToCommentDtoAsync(db, c));
+
+        var transferDtos = new List<IncidentTransferDto>();
+        foreach (var t in transfers.OrderBy(t => t.TransferredAt))
+            transferDtos.Add(await ToTransferDtoAsync(db, t));
+
+        var activityDtos = new List<IncidentActivityDto>();
+        foreach (var a in activity.OrderBy(a => a.OccurredAt))
+            activityDtos.Add(await ToActivityDtoAsync(db, a));
+
+        var segmentDtos = new List<IncidentTimeSegmentDto>();
+        foreach (var s in segments)
+            segmentDtos.Add(await ToSegmentDtoAsync(db, s));
+
+        return new IncidentDetailDto
         {
-            Id = Guid.NewGuid(), IncidentId = incidentId, AreaId = incident.CurrentAreaId,
-            UserId = userId, StartedAt = now, IsActiveWork = true
-        });
+            Id = incident.Id,
+            Code = incident.Code,
+            Title = incident.Title,
+            Description = incident.Description,
+            Status = incident.Status,
+            Priority = incident.Priority,
+            OriginAreaId = incident.OriginAreaId,
+            OriginAreaName = originArea?.Name ?? "-",
+            OriginAreaColor = originArea?.Color ?? "#334155",
+            CurrentAreaId = incident.CurrentAreaId,
+            CurrentAreaName = area?.Name ?? "-",
+            CurrentAreaColor = area?.Color ?? "#334155",
+            CreatedByUserId = incident.CreatedByUserId,
+            CreatedByName = creator?.FullName ?? "-",
+            CreatedByInitials = GetInitials(creator?.FullName),
+            CreatedByAvatarColorFrom = creator?.AvatarColorFrom,
+            CreatedByAvatarColorTo = creator?.AvatarColorTo,
+            Responsibles = responsibles,
+            CreatedAt = incident.CreatedAt,
+            UpdatedAt = incident.UpdatedAt,
+            ClosedAt = incident.ClosedAt,
+            ReactivationCount = incident.ReactivationCount,
+            TotalActiveHours = activeHours,
+            TotalDeadHours = deadHours,
+            TotalHours = activeHours + deadHours,
+            SlaHours = IncidentSlaHelper.SlaHoursFor(incident.Priority),
+            IsOverdue = IncidentSlaHelper.IsOverdue(incident.Priority, incident.CreatedAt, incident.ClosedAt),
+            Comments = commentDtos,
+            Transfers = transferDtos,
+            Activity = activityDtos,
+            TimeSegments = segmentDtos,
+            Attachments = attachments.OrderBy(a => a.UploadedAt).ToList(),
+            RelatedArticles = relatedArticles.Select(a => new RelatedArticleSummaryDto { Id = a.Id, Title = a.Title, Slug = a.Slug }).ToList(),
+            Content = incident.Content,
+            Participants = participantRows.Select(p => new IncidentParticipantDto
+            {
+                UserId = p.SecurityUserId,
+                FullName = p.SecurityUser.FullName,
+                Initials = GetInitials(p.SecurityUser.FullName),
+                Position = p.SecurityUser.Position,
+                AvatarColorFrom = p.SecurityUser.AvatarColorFrom,
+                AvatarColorTo = p.SecurityUser.AvatarColorTo,
+                AreaName = p.Area.Name,
+                Role = p.Role,
+                AssignedAt = p.AssignedAt,
+                RemovedAt = p.RemovedAt
+            }).ToList()
+        };
     }
 
-    incident.UpdatedAt = now;
-
-    var actor = await GetUserByIdAsync(actorUserId);
-    await LogActivityAsync(incidentId, IncidentActivityType.Asignada, actorUserId,
-        $"{actor?.FullName ?? "-"} sumó a {user.FullName} como responsable.", now);
-
-    if (userId != actorUserId)
-        NotifyResponsibleAssigned(incidentId, incident.Code, incident.Title,
-            (await GetAreaByIdAsync(incident.CurrentAreaId))?.Name ?? "-",
-            user, actorUserId, actor?.FullName ?? "-", NotificationType.IncidentAssigned);
-
-    await _db.SaveChangesAsync();
-    return true;
-}
-
-public async Task<bool> RemoveResponsibleAsync(Guid incidentId, Guid userId, Guid actorUserId, bool actingAsAdmin = false)
-{
-    if (!actingAsAdmin && userId != actorUserId) return false;
-
-    var participant = await _db.IncidentParticipants.FirstOrDefaultAsync(p =>
-        p.IncidentId == incidentId && p.SecurityUserId == userId &&
-        p.Role == IncidentParticipantRole.Responsable && p.RemovedAt == null);
-    if (participant == null) return false;
-
-    var now = DateTime.Now;
-    participant.RemovedAt = now;
-
-    var incident = await GetIncidentByIdAsync(incidentId);
-    if (incident != null)
+    public async Task<IReadOnlyList<IncidentComment>> GetCommentsByIncidentAsync(Guid incidentId)
     {
+        await using var db = await _dbFactory.CreateDbContextAsync();
+        return await db.IncidentComments.Where(c => c.IncidentId == incidentId).ToListAsync();
+    }
+
+    public async Task<IReadOnlyList<IncidentTransfer>> GetTransfersByIncidentAsync(Guid incidentId)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync();
+        return await db.IncidentTransfers.Where(t => t.IncidentId == incidentId).ToListAsync();
+    }
+
+    public async Task<IReadOnlyList<IncidentActivityEntry>> GetActivityByIncidentAsync(Guid incidentId)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync();
+        return await db.IncidentActivityEntries.Where(a => a.IncidentId == incidentId).ToListAsync();
+    }
+
+    public async Task<IReadOnlyList<IncidentAttachment>> GetAttachmentsByIncidentAsync(Guid incidentId)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync();
+        return await db.IncidentAttachments.Where(a => a.IncidentId == incidentId).ToListAsync();
+    }
+
+    public async Task<IReadOnlyList<Article>> GetRelatedArticlesAsync(Guid incidentId)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync();
+        return await db.IncidentArticleLinks.Where(l => l.IncidentId == incidentId)
+            .Include(l => l.Article).Select(l => l.Article).ToListAsync();
+    }
+
+    public async Task LinkArticleAsync(Guid incidentId, Guid articleId, Guid actorUserId)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync();
+
+        var exists = await db.IncidentArticleLinks.AnyAsync(l => l.IncidentId == incidentId && l.ArticleId == articleId);
+        if (exists) return;
+
+        db.IncidentArticleLinks.Add(new IncidentArticleLink
+        {
+            Id = Guid.NewGuid(), IncidentId = incidentId, ArticleId = articleId,
+            LinkedByUserId = actorUserId, LinkedAt = DateTime.Now
+        });
+
+        var actor = await db.SecurityUsers.FirstOrDefaultAsync(u => u.Id == actorUserId);
+        var article = await db.Articles.FirstOrDefaultAsync(a => a.Id == articleId);
+        await LogActivityAsync(db, incidentId, IncidentActivityType.Editada, actorUserId,
+            $"{actor?.FullName ?? "-"} vinculó el artículo \"{article?.Title ?? "-"}\".", DateTime.Now);
+
+        await db.SaveChangesAsync();
+    }
+
+    public async Task UnlinkArticleAsync(Guid incidentId, Guid articleId, Guid actorUserId)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync();
+
+        var link = await db.IncidentArticleLinks.FirstOrDefaultAsync(l => l.IncidentId == incidentId && l.ArticleId == articleId);
+        if (link == null) return;
+
+        db.IncidentArticleLinks.Remove(link);
+
+        var actor = await db.SecurityUsers.FirstOrDefaultAsync(u => u.Id == actorUserId);
+        await LogActivityAsync(db, incidentId, IncidentActivityType.Editada, actorUserId,
+            $"{actor?.FullName ?? "-"} quitó un artículo relacionado.", DateTime.Now);
+
+        await db.SaveChangesAsync();
+    }
+
+    // =========================================================================
+    // ESCRITURA - CICLO DE VIDA
+    // =========================================================================
+
+    public async Task<Incident> CreateIncidentAsync(
+        string title, string description, Guid areaId, IncidentPriority priority,
+        Guid createdByUserId, Guid? initialResponsibleUserId, List<ArticleContentBlock>? content = null)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync();
+
+        var now = DateTime.Now;
+        var count = await db.Incidents.CountAsync();
+        var code = $"INC-{(count + 1):D4}";
+
+        var incident = new Incident
+        {
+            Id = Guid.NewGuid(),
+            Code = code,
+            Title = title.Trim(),
+            Description = description?.Trim() ?? string.Empty,
+            OriginAreaId = areaId,
+            CurrentAreaId = areaId,
+            CreatedByUserId = createdByUserId,
+            Priority = priority,
+            Status = IncidentStatus.EnDesarrollo,
+            CreatedAt = now,
+            UpdatedAt = now,
+            Content = content ?? new()
+        };
+
+        db.Incidents.Add(incident);
+
+        db.IncidentParticipants.Add(new IncidentParticipant
+        {
+            Id = Guid.NewGuid(), IncidentId = incident.Id, SecurityUserId = createdByUserId,
+            AreaId = areaId, Role = IncidentParticipantRole.Colaborador, AssignedAt = now
+        });
+
+        var creator = await db.SecurityUsers.FirstOrDefaultAsync(u => u.Id == createdByUserId);
+        await LogActivityAsync(db, incident.Id, IncidentActivityType.Creada, createdByUserId,
+            $"{creator?.FullName ?? "Alguien"} creó la incidencia \"{incident.Title}\".", now);
+
+        db.IncidentTimeSegments.Add(new IncidentTimeSegment
+        {
+            Id = Guid.NewGuid(), IncidentId = incident.Id, AreaId = areaId,
+            UserId = initialResponsibleUserId, StartedAt = now, IsActiveWork = initialResponsibleUserId.HasValue
+        });
+
+        SecurityUser? respUser = null;
+        if (initialResponsibleUserId.HasValue)
+        {
+            respUser = await db.SecurityUsers.FirstOrDefaultAsync(u => u.Id == initialResponsibleUserId.Value);
+            if (respUser != null && respUser.AreaId == areaId)
+            {
+                if (initialResponsibleUserId.Value == createdByUserId)
+                {
+                    var creatorRow = await db.IncidentParticipants.FirstOrDefaultAsync(p =>
+                        p.IncidentId == incident.Id && p.SecurityUserId == createdByUserId && p.RemovedAt == null);
+                    if (creatorRow != null) creatorRow.Role = IncidentParticipantRole.Responsable;
+                }
+                else
+                {
+                    db.IncidentParticipants.Add(new IncidentParticipant
+                    {
+                        Id = Guid.NewGuid(), IncidentId = incident.Id, SecurityUserId = initialResponsibleUserId.Value,
+                        AreaId = areaId, Role = IncidentParticipantRole.Responsable, AssignedAt = now
+                    });
+                }
+
+                await LogActivityAsync(db, incident.Id, IncidentActivityType.Asignada, createdByUserId,
+                    $"{respUser.FullName} quedó como responsable al crearse.", now);
+            }
+        }
+
+        await db.SaveChangesAsync();
+
+        var area = await db.Areas.FirstOrDefaultAsync(a => a.Id == areaId);
+        if (respUser != null && respUser.Id != createdByUserId)
+            NotifyResponsibleAssigned(incident.Id, incident.Code, incident.Title, area?.Name ?? "-",
+                respUser, createdByUserId, creator?.FullName ?? "-", NotificationType.IncidentAssigned);
+
+        return incident;
+    }
+
+    public async Task<bool> ChangeStatusAsync(Guid incidentId, IncidentStatus newStatus, Guid actorUserId, bool actingAsAdmin = false)
+    {
+        if (newStatus != IncidentStatus.EnDesarrollo && newStatus != IncidentStatus.Resuelta) return false;
+
+        await using var db = await _dbFactory.CreateDbContextAsync();
+        var incident = await db.Incidents.FirstOrDefaultAsync(i => i.Id == incidentId);
+        if (incident == null || incident.Status == IncidentStatus.Cerrada) return false;
+        if (incident.Status == newStatus) return true;
+
+        if (!actingAsAdmin)
+        {
+            var isResponsible = await db.IncidentParticipants.AnyAsync(p =>
+                p.IncidentId == incidentId && p.SecurityUserId == actorUserId &&
+                p.Role == IncidentParticipantRole.Responsable && p.RemovedAt == null);
+            if (!isResponsible) return false;
+        }
+
+        var now = DateTime.Now;
+        var wasResolved = incident.Status == IncidentStatus.Resuelta;
+        incident.Status = newStatus;
         incident.UpdatedAt = now;
 
-        var remaining = await _db.IncidentParticipants.CountAsync(p =>
-            p.IncidentId == incidentId && p.Role == IncidentParticipantRole.Responsable &&
-            p.RemovedAt == null && p.Id != participant.Id);
+        if (newStatus == IncidentStatus.Resuelta)
+            await CloseTimeSegmentAsync(db, incidentId, now);
+        else if (wasResolved)
+            await OpenSegmentForCurrentStateAsync(db, incident, now);
 
-        if (remaining == 0 && incident.Status != IncidentStatus.Resuelta)
+        var actor = await db.SecurityUsers.FirstOrDefaultAsync(u => u.Id == actorUserId);
+        await LogActivityAsync(db, incidentId, IncidentActivityType.CambioEstado, actorUserId,
+            $"{actor?.FullName ?? "-"} cambió el estado a {IncidentLabels.Status(newStatus)}.", now);
+
+        await db.SaveChangesAsync();
+        return true;
+    }
+
+    public async Task AddCommentAsync(Guid incidentId, Guid authorUserId, string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return;
+        await using var db = await _dbFactory.CreateDbContextAsync();
+        var now = DateTime.Now;
+
+        db.IncidentComments.Add(new IncidentComment
         {
-            await CloseTimeSegmentAsync(incidentId, now);
-            _db.IncidentTimeSegments.Add(new IncidentTimeSegment
+            Id = Guid.NewGuid(), IncidentId = incidentId, AuthorUserId = authorUserId,
+            Text = text.Trim(), CreatedAt = now
+        });
+
+        var incident = await db.Incidents.FirstOrDefaultAsync(i => i.Id == incidentId);
+        if (incident != null) incident.UpdatedAt = now;
+
+        var author = await db.SecurityUsers.FirstOrDefaultAsync(u => u.Id == authorUserId);
+        await LogActivityAsync(db, incidentId, IncidentActivityType.ComentarioAgregado, authorUserId,
+            $"{author?.FullName ?? "-"} comentó en la incidencia.", now);
+
+        await db.SaveChangesAsync();
+    }
+
+    public async Task AddAttachmentAsync(Guid incidentId, string fileName, string fileType, Guid uploadedByUserId)
+    {
+        if (string.IsNullOrWhiteSpace(fileName)) return;
+        await using var db = await _dbFactory.CreateDbContextAsync();
+        var now = DateTime.Now;
+
+        db.IncidentAttachments.Add(new IncidentAttachment
+        {
+            Id = Guid.NewGuid(), IncidentId = incidentId, FileName = fileName.Trim(),
+            FileType = string.IsNullOrWhiteSpace(fileType) ? "file" : fileType,
+            SizeLabel = "-", UploadedByUserId = uploadedByUserId, UploadedAt = now
+        });
+
+        var uploader = await db.SecurityUsers.FirstOrDefaultAsync(u => u.Id == uploadedByUserId);
+        await LogActivityAsync(db, incidentId, IncidentActivityType.ArchivoAdjuntado, uploadedByUserId,
+            $"{uploader?.FullName ?? "-"} adjuntó \"{fileName}\".", now);
+
+        await db.SaveChangesAsync();
+    }
+
+    public async Task<bool> CloseIncidentAsync(Guid incidentId, Guid actorUserId, bool actingAsAdmin = false)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync();
+        var incident = await db.Incidents.FirstOrDefaultAsync(i => i.Id == incidentId);
+        if (incident == null) return false;
+
+        if (!actingAsAdmin)
+        {
+            var isResponsible = await db.IncidentParticipants.AnyAsync(p =>
+                p.IncidentId == incidentId && p.SecurityUserId == actorUserId &&
+                p.Role == IncidentParticipantRole.Responsable && p.RemovedAt == null);
+            if (!isResponsible) return false;
+        }
+
+        var now = DateTime.Now;
+        await CloseTimeSegmentAsync(db, incidentId, now);
+
+        incident.Status = IncidentStatus.Cerrada;
+        incident.ClosedAt = now;
+        incident.UpdatedAt = now;
+
+        var actor = await db.SecurityUsers.FirstOrDefaultAsync(u => u.Id == actorUserId);
+        await LogActivityAsync(db, incidentId, IncidentActivityType.Cerrada, actorUserId,
+            $"{actor?.FullName ?? "-"} cerró la incidencia.", now);
+
+        await db.SaveChangesAsync();
+        return true;
+    }
+
+    public async Task<bool> ReactivateIncidentAsync(Guid incidentId, Guid actorUserId, bool actingAsAdmin = false)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync();
+        var incident = await db.Incidents.FirstOrDefaultAsync(i => i.Id == incidentId);
+        if (incident == null) return false;
+        if (!actingAsAdmin && incident.CreatedByUserId != actorUserId) return false;
+        if (incident.Status != IncidentStatus.Cerrada) return false;
+
+        var now = DateTime.Now;
+        incident.Status = IncidentStatus.Reactivada;
+        incident.ClosedAt = null;
+        incident.ReactivationCount++;
+        incident.UpdatedAt = now;
+
+        await OpenSegmentForCurrentStateAsync(db, incident, now);
+
+        var actor = await db.SecurityUsers.FirstOrDefaultAsync(u => u.Id == actorUserId);
+        await LogActivityAsync(db, incidentId, IncidentActivityType.Reactivada, actorUserId,
+            $"{actor?.FullName ?? "-"} reactivó la incidencia.", now);
+
+        await db.SaveChangesAsync();
+        return true;
+    }
+
+    public async Task UpdateIncidentContentAsync(Guid incidentId, List<ArticleContentBlock> content, Guid actorUserId)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync();
+        var incident = await db.Incidents.FirstOrDefaultAsync(i => i.Id == incidentId);
+        if (incident == null) return;
+
+        incident.Content = content;
+        incident.UpdatedAt = DateTime.Now;
+
+        var actor = await db.SecurityUsers.FirstOrDefaultAsync(u => u.Id == actorUserId);
+        await LogActivityAsync(db, incident.Id, IncidentActivityType.Editada, actorUserId,
+            $"{actor?.FullName ?? "Alguien"} actualizó la descripción detallada.", DateTime.Now);
+
+        await db.SaveChangesAsync();
+    }
+
+    /// <summary>Elimina definitivamente la incidencia dentro de una transacción.
+    /// Solo responsables (activos o históricos) o admins pueden ejecutarla.</summary>
+    public async Task<bool> DeleteIncidentAsync(Guid incidentId, Guid actorUserId, bool actingAsAdmin = false)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync();
+        await using var transaction = await db.Database.BeginTransactionAsync();
+
+        try
+        {
+            var incident = await db.Incidents.FirstOrDefaultAsync(i => i.Id == incidentId);
+            if (incident == null) { await transaction.RollbackAsync(); return false; }
+
+            if (!actingAsAdmin)
             {
-                Id = Guid.NewGuid(), IncidentId = incidentId, AreaId = incident.CurrentAreaId,
-                UserId = null, StartedAt = now, IsActiveWork = false
-            });
+                var wasResponsible = await db.IncidentParticipants.AnyAsync(p =>
+                    p.IncidentId == incidentId && p.SecurityUserId == actorUserId &&
+                    p.Role == IncidentParticipantRole.Responsable);
+                if (!wasResponsible) { await transaction.RollbackAsync(); return false; }
+            }
+
+            // Las Notifications referencian IncidentId sin cascada (para no perder
+            // historial de notificaciones "huérfanas" por accidente); hay que
+            // limpiarlas explícitamente antes de poder borrar la incidencia.
+            await db.Notifications.Where(n => n.IncidentId == incidentId).ExecuteDeleteAsync();
+
+            // El resto tiene ON DELETE CASCADE configurado, pero se borra explícito
+            // para no depender de que la cascada física esté realmente aplicada.
+            await db.IncidentArticleLinks.Where(l => l.IncidentId == incidentId).ExecuteDeleteAsync();
+            await db.IncidentTimeSegments.Where(s => s.IncidentId == incidentId).ExecuteDeleteAsync();
+            await db.IncidentActivityEntries.Where(a => a.IncidentId == incidentId).ExecuteDeleteAsync();
+            await db.IncidentTransfers.Where(t => t.IncidentId == incidentId).ExecuteDeleteAsync();
+            await db.IncidentAttachments.Where(a => a.IncidentId == incidentId).ExecuteDeleteAsync();
+            await db.IncidentComments.Where(c => c.IncidentId == incidentId).ExecuteDeleteAsync();
+            await db.IncidentParticipants.Where(p => p.IncidentId == incidentId).ExecuteDeleteAsync();
+
+            db.Incidents.Remove(incident);
+            await db.SaveChangesAsync();
+
+            await transaction.CommitAsync();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            await transaction.RollbackAsync();
+            _logger.LogError(ex, "Error eliminando incidencia {IncidentId}", incidentId);
+            return false;
         }
     }
 
-    var user = await GetUserByIdAsync(userId);
-    var actor = await GetUserByIdAsync(actorUserId);
-    await LogActivityAsync(incidentId, IncidentActivityType.Desresponsabilizada, actorUserId,
-        $"{(actingAsAdmin && userId != actorUserId ? $"{actor?.FullName ?? "-"} quitó a {user?.FullName ?? "-"} como" : $"{user?.FullName ?? "-"} se desresponsabilizó de la")} incidencia.", now);
+    // =========================================================================
+    // RESPONSABILIDAD (N:N, misma área)
+    // =========================================================================
 
-    await _db.SaveChangesAsync();
-    return true;
-}
-
-public async Task<bool> DelegateToAreaAsync(Guid incidentId, Guid toAreaId, List<Guid> newResponsibleUserIds, string reason, Guid actorUserId, bool actingAsAdmin = false)
-{
-    if (newResponsibleUserIds == null || newResponsibleUserIds.Count == 0) return false;
-
-    var incident = await GetIncidentByIdAsync(incidentId);
-    if (incident == null) return false;
-
-    var activeResponsibles = await _db.IncidentParticipants
-        .Where(p => p.IncidentId == incidentId && p.Role == IncidentParticipantRole.Responsable && p.RemovedAt == null)
-        .ToListAsync();
-
-    if (!actingAsAdmin && !activeResponsibles.Any(p => p.SecurityUserId == actorUserId)) return false;
-
-    var newUsers = new List<SecurityUser>();
-    foreach (var uid in newResponsibleUserIds.Distinct())
+    public async Task<IReadOnlyList<ResponsibleSummaryDto>> GetResponsiblesAsync(Guid incidentId)
     {
-        var u = await GetUserByIdAsync(uid);
-        if (u == null || u.AreaId != toAreaId) return false; // invariante, no se salta ni para admin
-        newUsers.Add(u);
+        await using var db = await _dbFactory.CreateDbContextAsync();
+        return await GetResponsiblesInternalAsync(db, incidentId);
     }
 
-    var now = DateTime.Now;
-    await CloseTimeSegmentAsync(incidentId, now);
-
-    foreach (var p in activeResponsibles)
-        p.RemovedAt = now;
-
-    var fromArea = await GetAreaByIdAsync(incident.CurrentAreaId);
-    var toArea = await GetAreaByIdAsync(toAreaId);
-
-    _db.IncidentTransfers.Add(new IncidentTransfer
+    private async Task<List<ResponsibleSummaryDto>> GetResponsiblesInternalAsync(DaviWikiDbContext db, Guid incidentId)
     {
-        Id = Guid.NewGuid(), IncidentId = incidentId,
-        FromUserId = actorUserId, ToUserId = newUsers[0].Id,
-        FromAreaId = incident.CurrentAreaId, ToAreaId = toAreaId,
-        Reason = string.IsNullOrWhiteSpace(reason) ? "Sin motivo especificado." : reason.Trim(),
-        TransferredAt = now
-    });
+        var participants = await db.IncidentParticipants
+            .Where(p => p.IncidentId == incidentId && p.Role == IncidentParticipantRole.Responsable && p.RemovedAt == null)
+            .Include(p => p.SecurityUser).Include(p => p.Area)
+            .ToListAsync();
 
-    incident.CurrentAreaId = toAreaId;
-    incident.Status = IncidentStatus.EnDesarrollo;
-    incident.UpdatedAt = now;
-
-    foreach (var u in newUsers)
-    {
-        _db.IncidentParticipants.Add(new IncidentParticipant
+        return participants.Select(p => new ResponsibleSummaryDto
         {
-            Id = Guid.NewGuid(), IncidentId = incidentId, SecurityUserId = u.Id,
-            AreaId = toAreaId, Role = IncidentParticipantRole.Responsable, AssignedAt = now
+            Id = p.SecurityUserId,
+            FullName = p.SecurityUser.FullName,
+            Initials = GetInitials(p.SecurityUser.FullName),
+            AvatarColorFrom = p.SecurityUser.AvatarColorFrom,
+            AvatarColorTo = p.SecurityUser.AvatarColorTo,
+            AreaName = p.Area.Name
+        }).ToList();
+    }
+
+    public async Task<bool> AddResponsibleAsync(Guid incidentId, Guid userId, Guid actorUserId, bool actingAsAdmin = false)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync();
+
+        var incident = await db.Incidents.FirstOrDefaultAsync(i => i.Id == incidentId);
+        if (incident == null || incident.Status == IncidentStatus.Cerrada) return false;
+
+        var user = await db.SecurityUsers.FirstOrDefaultAsync(u => u.Id == userId);
+        if (user == null || user.AreaId != incident.CurrentAreaId) return false;
+
+        var activeResponsibles = await db.IncidentParticipants
+            .Where(p => p.IncidentId == incidentId && p.Role == IncidentParticipantRole.Responsable && p.RemovedAt == null)
+            .ToListAsync();
+
+        if (activeResponsibles.Any(p => p.SecurityUserId == userId)) return true;
+
+        if (!actingAsAdmin)
+        {
+            var actorIsResponsible = activeResponsibles.Any(p => p.SecurityUserId == actorUserId);
+            if (activeResponsibles.Count > 0 && !actorIsResponsible) return false;
+        }
+
+        var now = DateTime.Now;
+
+        // --- Esta era la línea que faltaba ---
+        var existingRow = await db.IncidentParticipants.FirstOrDefaultAsync(p =>
+            p.IncidentId == incidentId && p.SecurityUserId == userId && p.RemovedAt == null);
+
+        if (existingRow != null)
+        {
+            existingRow.Role = IncidentParticipantRole.Responsable;
+            existingRow.AreaId = incident.CurrentAreaId;
+        }
+        else
+        {
+            db.IncidentParticipants.Add(new IncidentParticipant
+            {
+                Id = Guid.NewGuid(), IncidentId = incidentId, SecurityUserId = userId,
+                AreaId = incident.CurrentAreaId, Role = IncidentParticipantRole.Responsable, AssignedAt = now
+            });
+        }
+        // --- fin del fix ---
+
+        if (activeResponsibles.Count == 0 && incident.Status != IncidentStatus.Resuelta)
+        {
+            await CloseTimeSegmentAsync(db, incidentId, now);
+            db.IncidentTimeSegments.Add(new IncidentTimeSegment
+            {
+                Id = Guid.NewGuid(), IncidentId = incidentId, AreaId = incident.CurrentAreaId,
+                UserId = userId, StartedAt = now, IsActiveWork = true
+            });
+        }
+
+        incident.UpdatedAt = now;
+
+        var actor = await db.SecurityUsers.FirstOrDefaultAsync(u => u.Id == actorUserId);
+        await LogActivityAsync(db, incidentId, IncidentActivityType.Asignada, actorUserId,
+            $"{actor?.FullName ?? "-"} sumó a {user.FullName} como responsable.", now);
+
+        await db.SaveChangesAsync();
+
+        if (userId != actorUserId)
+        {
+            var area = await db.Areas.FirstOrDefaultAsync(a => a.Id == incident.CurrentAreaId);
+            NotifyResponsibleAssigned(incidentId, incident.Code, incident.Title, area?.Name ?? "-",
+                user, actorUserId, actor?.FullName ?? "-", NotificationType.IncidentAssigned);
+        }
+
+        return true;
+    }
+
+    public async Task<bool> RemoveResponsibleAsync(Guid incidentId, Guid userId, Guid actorUserId, bool actingAsAdmin = false)
+    {
+        if (!actingAsAdmin && userId != actorUserId) return false;
+
+        await using var db = await _dbFactory.CreateDbContextAsync();
+
+        var participant = await db.IncidentParticipants.FirstOrDefaultAsync(p =>
+            p.IncidentId == incidentId && p.SecurityUserId == userId &&
+            p.Role == IncidentParticipantRole.Responsable && p.RemovedAt == null);
+        if (participant == null) return false;
+
+        var now = DateTime.Now;
+        participant.RemovedAt = now;
+
+        var incident = await db.Incidents.FirstOrDefaultAsync(i => i.Id == incidentId);
+        if (incident != null)
+        {
+            incident.UpdatedAt = now;
+
+            var remaining = await db.IncidentParticipants.CountAsync(p =>
+                p.IncidentId == incidentId && p.Role == IncidentParticipantRole.Responsable &&
+                p.RemovedAt == null && p.Id != participant.Id);
+
+            if (remaining == 0 && incident.Status != IncidentStatus.Resuelta)
+            {
+                await CloseTimeSegmentAsync(db, incidentId, now);
+                db.IncidentTimeSegments.Add(new IncidentTimeSegment
+                {
+                    Id = Guid.NewGuid(), IncidentId = incidentId, AreaId = incident.CurrentAreaId,
+                    UserId = null, StartedAt = now, IsActiveWork = false
+                });
+            }
+        }
+
+        var user = await db.SecurityUsers.FirstOrDefaultAsync(u => u.Id == userId);
+        var actor = await db.SecurityUsers.FirstOrDefaultAsync(u => u.Id == actorUserId);
+        await LogActivityAsync(db, incidentId, IncidentActivityType.Desresponsabilizada, actorUserId,
+            $"{(actingAsAdmin && userId != actorUserId ? $"{actor?.FullName ?? "-"} quitó a {user?.FullName ?? "-"} como" : $"{user?.FullName ?? "-"} se desresponsabilizó de la")} incidencia.", now);
+
+        await db.SaveChangesAsync();
+        return true;
+    }
+
+    public async Task<bool> DelegateToAreaAsync(Guid incidentId, Guid toAreaId, List<Guid> newResponsibleUserIds, string reason, Guid actorUserId, bool actingAsAdmin = false)
+    {
+        if (newResponsibleUserIds == null || newResponsibleUserIds.Count == 0) return false;
+
+        await using var db = await _dbFactory.CreateDbContextAsync();
+        var incident = await db.Incidents.FirstOrDefaultAsync(i => i.Id == incidentId);
+        if (incident == null) return false;
+
+        var activeResponsibles = await db.IncidentParticipants
+            .Where(p => p.IncidentId == incidentId && p.Role == IncidentParticipantRole.Responsable && p.RemovedAt == null)
+            .ToListAsync();
+
+        if (!actingAsAdmin && !activeResponsibles.Any(p => p.SecurityUserId == actorUserId)) return false;
+
+        var newUsers = new List<SecurityUser>();
+        foreach (var uid in newResponsibleUserIds.Distinct())
+        {
+            var u = await db.SecurityUsers.FirstOrDefaultAsync(x => x.Id == uid);
+            if (u == null || u.AreaId != toAreaId) return false;
+            newUsers.Add(u);
+        }
+
+        var now = DateTime.Now;
+        await CloseTimeSegmentAsync(db, incidentId, now);
+
+        foreach (var p in activeResponsibles)
+            p.RemovedAt = now;
+
+        var fromArea = await db.Areas.FirstOrDefaultAsync(a => a.Id == incident.CurrentAreaId);
+        var toArea = await db.Areas.FirstOrDefaultAsync(a => a.Id == toAreaId);
+
+        db.IncidentTransfers.Add(new IncidentTransfer
+        {
+            Id = Guid.NewGuid(), IncidentId = incidentId,
+            FromUserId = actorUserId, ToUserId = newUsers[0].Id,
+            FromAreaId = incident.CurrentAreaId, ToAreaId = toAreaId,
+            Reason = string.IsNullOrWhiteSpace(reason) ? "Sin motivo especificado." : reason.Trim(),
+            TransferredAt = now
+        });
+
+        incident.CurrentAreaId = toAreaId;
+        incident.Status = IncidentStatus.EnDesarrollo;
+        incident.UpdatedAt = now;
+
+        foreach (var u in newUsers)
+        {
+            var existingRow = await db.IncidentParticipants.FirstOrDefaultAsync(p =>
+                p.IncidentId == incidentId && p.SecurityUserId == u.Id && p.RemovedAt == null);
+
+            if (existingRow != null)
+            {
+                existingRow.Role = IncidentParticipantRole.Responsable;
+                existingRow.AreaId = toAreaId;
+            }
+            else
+            {
+                db.IncidentParticipants.Add(new IncidentParticipant
+                {
+                    Id = Guid.NewGuid(), IncidentId = incidentId, SecurityUserId = u.Id,
+                    AreaId = toAreaId, Role = IncidentParticipantRole.Responsable, AssignedAt = now
+                });
+            }
+        }
+
+        db.IncidentTimeSegments.Add(new IncidentTimeSegment
+        {
+            Id = Guid.NewGuid(), IncidentId = incidentId, AreaId = toAreaId,
+            UserId = newUsers[0].Id, StartedAt = now, IsActiveWork = true
+        });
+
+        var actor = await db.SecurityUsers.FirstOrDefaultAsync(u => u.Id == actorUserId);
+        var names = string.Join(", ", newUsers.Select(u => u.FullName));
+        await LogActivityAsync(db, incidentId, IncidentActivityType.Transferida, actorUserId,
+            $"{actor?.FullName ?? "-"} reenvió la incidencia de {fromArea?.Name ?? "-"} a {toArea?.Name ?? "-"} (nuevo(s) responsable(s): {names}).", now);
+
+        await db.SaveChangesAsync();
+
+        foreach (var u in newUsers)
+            NotifyResponsibleAssigned(incidentId, incident.Code, incident.Title, toArea?.Name ?? "-",
+                u, actorUserId, actor?.FullName ?? "-", NotificationType.IncidentDelegated);
+
+        return true;
+    }
+
+    // =========================================================================
+    // ACCESO
+    // =========================================================================
+
+    private async Task<List<Guid>> GetAccessibleIncidentIdsAsync(DaviWikiDbContext db, Guid userId)
+    {
+        return await db.IncidentParticipants
+            .Where(p => p.SecurityUserId == userId && p.Role == IncidentParticipantRole.Responsable)
+            .Select(p => p.IncidentId)
+            .Distinct()
+            .ToListAsync();
+    }
+
+    public async Task<bool> CanUserAccessIncidentAsync(Guid incidentId, Guid userId)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync();
+
+        var incident = await db.Incidents.FirstOrDefaultAsync(i => i.Id == incidentId);
+        if (incident == null) return false;
+        if (incident.CreatedByUserId == userId) return true;
+
+        return await db.IncidentParticipants.AnyAsync(p =>
+            p.IncidentId == incidentId && p.SecurityUserId == userId &&
+            p.Role == IncidentParticipantRole.Responsable);
+    }
+
+    // =========================================================================
+    // KPIs
+    // =========================================================================
+
+    public async Task<IncidentKpiSnapshotDto> GetKpiSnapshotAsync(Guid? onlyForUserId = null)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync();
+        List<Guid>? accessibleIds = onlyForUserId.HasValue ? await GetAccessibleIncidentIdsAsync(db, onlyForUserId.Value) : null;
+
+        var query = db.Incidents.AsQueryable();
+        if (accessibleIds != null) query = query.Where(i => accessibleIds.Contains(i.Id));
+        var incidents = await query.ToListAsync();
+
+        var active = incidents.Where(i => i.Status != IncidentStatus.Cerrada).ToList();
+        var closed = incidents.Where(i => i.Status == IncidentStatus.Cerrada).ToList();
+
+        var avgResolutionHours = closed.Count > 0
+            ? closed.Average(i => (i.ClosedAt!.Value - i.CreatedAt).TotalHours)
+            : 0;
+
+        double avgDeadHours = 0;
+        if (incidents.Count > 0)
+        {
+            var totalDead = 0.0;
+            foreach (var i in incidents) totalDead += (await ComputeHoursAsync(db, i.Id)).DeadHours;
+            avgDeadHours = totalDead / incidents.Count;
+        }
+
+        var loadByArea = await GetLoadByAreaAsync(onlyForUserId);
+        var loadByResponsible = await GetLoadByResponsibleAsync(onlyForUserId);
+        var areas = await db.Areas.ToListAsync();
+
+        var avgTimeByArea = new List<AreaAvgTimeDto>();
+        foreach (var area in areas)
+        {
+            avgTimeByArea.Add(new AreaAvgTimeDto
+            {
+                AreaName = area.Name, AreaColor = area.Color,
+                AvgHours = Math.Round(await AverageHoursForAreaAsync(db, area.Id, accessibleIds), 1)
+            });
+        }
+
+        return new IncidentKpiSnapshotDto
+        {
+            ActiveCount = active.Count,
+            ClosedCount = closed.Count,
+            ReactivatedCount = incidents.Count(i => i.ReactivationCount > 0),
+            OverdueCount = active.Count(i => IncidentSlaHelper.IsOverdue(i.Priority, i.CreatedAt, null)),
+            AvgResolutionHours = Math.Round(avgResolutionHours, 1),
+            AvgDeadHours = Math.Round(avgDeadHours, 1),
+            TopAreaByLoad = loadByArea.OrderByDescending(a => a.Count).FirstOrDefault(),
+            TopResponsible = loadByResponsible.OrderByDescending(r => r.Count).FirstOrDefault(),
+            LoadByArea = loadByArea.ToList(),
+            LoadByResponsible = loadByResponsible.ToList(),
+            StatusDistribution = Enum.GetValues<IncidentStatus>()
+                .Select(s => new StatusCountDto { Status = s, Count = incidents.Count(i => i.Status == s) })
+                .Where(d => d.Count > 0).ToList(),
+            PriorityDistribution = Enum.GetValues<IncidentPriority>()
+                .Select(p => new PriorityCountDto { Priority = p, Count = incidents.Count(i => i.Priority == p) })
+                .Where(d => d.Count > 0).ToList(),
+            AvgTimeByArea = avgTimeByArea
+        };
+    }
+
+    public async Task<IReadOnlyList<AreaLoadDto>> GetLoadByAreaAsync(Guid? onlyForUserId = null)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync();
+        List<Guid>? accessibleIds = onlyForUserId.HasValue ? await GetAccessibleIncidentIdsAsync(db, onlyForUserId.Value) : null;
+
+        var areas = await db.Areas.ToListAsync();
+        var result = new List<AreaLoadDto>();
+
+        foreach (var area in areas)
+        {
+            var q = db.Incidents.Where(i => i.CurrentAreaId == area.Id && i.Status != IncidentStatus.Cerrada);
+            if (accessibleIds != null) q = q.Where(i => accessibleIds.Contains(i.Id));
+            result.Add(new AreaLoadDto { AreaName = area.Name, AreaColor = area.Color, Count = await q.CountAsync() });
+        }
+
+        return result.OrderByDescending(a => a.Count).ToList();
+    }
+
+    public async Task<IReadOnlyList<ResponsibleLoadDto>> GetLoadByResponsibleAsync(Guid? onlyForUserId = null)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync();
+
+        var activeQuery = db.IncidentParticipants
+            .Where(p => p.Role == IncidentParticipantRole.Responsable && p.RemovedAt == null);
+
+        if (onlyForUserId.HasValue)
+        {
+            var accessibleIds = await GetAccessibleIncidentIdsAsync(db, onlyForUserId.Value);
+            activeQuery = activeQuery.Where(p => accessibleIds.Contains(p.IncidentId));
+        }
+
+        var grouped = await activeQuery
+            .Join(db.Incidents.Where(i => i.Status != IncidentStatus.Cerrada),
+                p => p.IncidentId, i => i.Id, (p, i) => p.SecurityUserId)
+            .GroupBy(uid => uid)
+            .Select(g => new { UserId = g.Key, Count = g.Count() })
+            .OrderByDescending(g => g.Count)
+            .Take(10)
+            .ToListAsync();
+
+        var result = new List<ResponsibleLoadDto>();
+        foreach (var g in grouped)
+        {
+            var user = await db.SecurityUsers.FirstOrDefaultAsync(u => u.Id == g.UserId);
+            result.Add(new ResponsibleLoadDto { UserName = user?.FullName ?? "-", Initials = GetInitials(user?.FullName), Count = g.Count });
+        }
+        return result;
+    }
+
+    public async Task<IReadOnlyList<IncidentActivityFeedDto>> GetRecentActivityAsync(int take = 12, Guid? onlyForUserId = null)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync();
+
+        var query = db.IncidentActivityEntries.AsQueryable();
+        if (onlyForUserId.HasValue)
+        {
+            var accessibleIds = await GetAccessibleIncidentIdsAsync(db, onlyForUserId.Value);
+            query = query.Where(a => accessibleIds.Contains(a.IncidentId));
+        }
+
+        var entries = await query.OrderByDescending(a => a.OccurredAt).Take(take).ToListAsync();
+        var result = new List<IncidentActivityFeedDto>();
+
+        foreach (var a in entries)
+        {
+            var incident = await db.Incidents.FirstOrDefaultAsync(i => i.Id == a.IncidentId);
+            var actor = await db.SecurityUsers.FirstOrDefaultAsync(u => u.Id == a.ActorUserId);
+            result.Add(new IncidentActivityFeedDto
+            {
+                Id = a.Id, IncidentId = a.IncidentId,
+                IncidentCode = incident?.Code ?? "-", IncidentTitle = incident?.Title ?? "-",
+                Type = a.Type, ActorName = actor?.FullName ?? "-",
+                Description = a.Description, OccurredAt = a.OccurredAt
+            });
+        }
+        return result;
+    }
+
+    // =========================================================================
+    // HELPERS PRIVADOS (todos reciben el DbContext como parámetro)
+    // =========================================================================
+
+    private async Task CloseTimeSegmentAsync(DaviWikiDbContext db, Guid incidentId, DateTime endedAt)
+    {
+        var open = await db.IncidentTimeSegments
+            .Where(s => s.IncidentId == incidentId && s.EndedAt == null)
+            .OrderByDescending(s => s.StartedAt)
+            .FirstOrDefaultAsync();
+        if (open != null) open.EndedAt = endedAt;
+    }
+
+    private async Task OpenSegmentForCurrentStateAsync(DaviWikiDbContext db, Incident incident, DateTime now)
+    {
+        var responsibleIds = await db.IncidentParticipants
+            .Where(p => p.IncidentId == incident.Id && p.Role == IncidentParticipantRole.Responsable && p.RemovedAt == null)
+            .Select(p => p.SecurityUserId)
+            .ToListAsync();
+
+        db.IncidentTimeSegments.Add(new IncidentTimeSegment
+        {
+            Id = Guid.NewGuid(),
+            IncidentId = incident.Id,
+            AreaId = incident.CurrentAreaId,
+            UserId = responsibleIds.Count > 0 ? responsibleIds[0] : (Guid?)null,
+            StartedAt = now,
+            IsActiveWork = responsibleIds.Count > 0
         });
     }
 
-    _db.IncidentTimeSegments.Add(new IncidentTimeSegment
+    private async Task LogActivityAsync(DaviWikiDbContext db, Guid incidentId, IncidentActivityType type, Guid actorUserId, string description, DateTime occurredAt)
     {
-        Id = Guid.NewGuid(), IncidentId = incidentId, AreaId = toAreaId,
-        UserId = newUsers[0].Id, StartedAt = now, IsActiveWork = true
-    });
-
-    var actor = await GetUserByIdAsync(actorUserId);
-    var names = string.Join(", ", newUsers.Select(u => u.FullName));
-    await LogActivityAsync(incidentId, IncidentActivityType.Transferida, actorUserId,
-        $"{actor?.FullName ?? "-"} reenvió la incidencia de {fromArea?.Name ?? "-"} a {toArea?.Name ?? "-"} (nuevo(s) responsable(s): {names}).", now);
-
-    foreach (var u in newUsers)
-        NotifyResponsibleAssigned(incidentId, incident.Code, incident.Title, toArea?.Name ?? "-",
-            u, actorUserId, actor?.FullName ?? "-", NotificationType.IncidentDelegated);
-
-    await _db.SaveChangesAsync();
-    return true;
-}
-
-
-
-
-
-
-
-
-
-private async Task<double> AverageHoursForAreaAsync(Guid areaId, List<Guid>? restrictToIncidentIds = null)
-{
-    var query = _db.IncidentTimeSegments.Where(s => s.AreaId == areaId);
-    if (restrictToIncidentIds != null) query = query.Where(s => restrictToIncidentIds.Contains(s.IncidentId));
-    var segments = await query.ToListAsync();
-    return segments.Count > 0 ? segments.Average(s => s.Duration.TotalHours) : 0;
-}
-
-public async Task<IncidentKpiSnapshotDto> GetKpiSnapshotAsync(Guid? onlyForUserId = null)
-{
-    List<Guid>? accessibleIds = onlyForUserId.HasValue ? await GetAccessibleIncidentIdsAsync(onlyForUserId.Value) : null;
-
-    var query = _db.Incidents.AsQueryable();
-    if (accessibleIds != null) query = query.Where(i => accessibleIds.Contains(i.Id));
-    var incidents = await query.ToListAsync();
-
-    var active = incidents.Where(i => i.Status != IncidentStatus.Cerrada).ToList();
-    var closed = incidents.Where(i => i.Status == IncidentStatus.Cerrada).ToList();
-
-    var avgResolutionHours = closed.Count > 0
-        ? closed.Average(i => (i.ClosedAt!.Value - i.CreatedAt).TotalHours)
-        : 0;
-
-    double avgDeadHours = 0;
-    if (incidents.Count > 0)
-    {
-        var totalDead = 0.0;
-        foreach (var i in incidents) totalDead += (await ComputeHoursAsync(i.Id)).DeadHours;
-        avgDeadHours = totalDead / incidents.Count;
+        db.IncidentActivityEntries.Add(new IncidentActivityEntry
+        {
+            Id = Guid.NewGuid(), IncidentId = incidentId, Type = type,
+            ActorUserId = actorUserId, Description = description, OccurredAt = occurredAt
+        });
+        await Task.CompletedTask;
     }
 
-    var loadByArea = await GetLoadByAreaAsync(onlyForUserId);
-    var loadByResponsible = await GetLoadByResponsibleAsync(onlyForUserId);
-    var areas = await GetAreasAsync();
-
-    var avgTimeByArea = new List<AreaAvgTimeDto>();
-    foreach (var area in areas)
+    private async Task<double> AverageHoursForAreaAsync(DaviWikiDbContext db, Guid areaId, List<Guid>? restrictToIncidentIds = null)
     {
-        avgTimeByArea.Add(new AreaAvgTimeDto
+        var query = db.IncidentTimeSegments.Where(s => s.AreaId == areaId);
+        if (restrictToIncidentIds != null) query = query.Where(s => restrictToIncidentIds.Contains(s.IncidentId));
+        var segments = await query.ToListAsync();
+        return segments.Count > 0 ? segments.Average(s => s.Duration.TotalHours) : 0;
+    }
+
+    private async Task<(double ActiveHours, double DeadHours)> ComputeHoursAsync(DaviWikiDbContext db, Guid incidentId)
+    {
+        var segments = await db.IncidentTimeSegments.Where(s => s.IncidentId == incidentId).ToListAsync();
+        var active = segments.Where(s => s.IsActiveWork).Sum(s => s.Duration.TotalHours);
+        var dead = segments.Where(s => !s.IsActiveWork).Sum(s => s.Duration.TotalHours);
+        return (Math.Round(active, 1), Math.Round(dead, 1));
+    }
+
+    private static string GetInitials(string? fullName)
+    {
+        if (string.IsNullOrWhiteSpace(fullName)) return "??";
+        var initials = string.Concat(fullName.Split(' ', StringSplitOptions.RemoveEmptyEntries).Select(p => p[0])).ToUpperInvariant();
+        return initials.Length > 2 ? initials[..2] : initials;
+    }
+
+    // =========================================================================
+    // NOTIFICACIONES EN SEGUNDO PLANO
+    // =========================================================================
+
+    /// <summary>Dispara notificación in-app + correo en segundo plano. Deliberadamente
+    /// no toca ningún DbContext del método que la invoca: _notificationService y
+    /// _emailSender crean sus propias conexiones cortas por su cuenta.</summary>
+    private void NotifyResponsibleAssigned(
+        Guid incidentId, string incidentCode, string incidentTitle, string areaName,
+        SecurityUser target, Guid actorUserId, string actorName, NotificationType notifType)
+    {
+        if (target.Id == actorUserId) return;
+
+        var targetId = target.Id;
+        var targetEmail = target.Email;
+
+        _ = Task.Run(async () =>
         {
-            AreaName = area.Name, AreaColor = area.Color,
-            AvgHours = Math.Round(await AverageHoursForAreaAsync(area.Id, accessibleIds), 1)
+            try
+            {
+                await _notificationService.CreateIncidentNotificationAsync(
+                    recipientUserId: targetId, actorUserId: actorUserId, incidentId: incidentId, type: notifType);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error creando notificación in-app de incidencia {Codigo} para {UserId}", incidentCode, targetId);
+            }
+
+            if (string.IsNullOrWhiteSpace(targetEmail)) return;
+
+            try
+            {
+                await _emailSender.EnviarCorreoIncidenciaAsignadaAsync(
+                    targetEmail, actorName, incidentCode, incidentTitle, areaName, DateTime.Now.ToString("dd/MM/yyyy"));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error enviando correo de incidencia {Codigo} a {UserId}", incidentCode, targetId);
+            }
         });
     }
 
-    return new IncidentKpiSnapshotDto
+    // =========================================================================
+    // MAPPERS
+    // =========================================================================
+
+    private async Task<IncidentSummaryDto> ToSummaryDtoAsync(DaviWikiDbContext db, Incident incident)
     {
-        ActiveCount = active.Count,
-        ClosedCount = closed.Count,
-        ReactivatedCount = incidents.Count(i => i.ReactivationCount > 0),
-        AvgResolutionHours = Math.Round(avgResolutionHours, 1),
-        AvgDeadHours = Math.Round(avgDeadHours, 1),
-        TopAreaByLoad = loadByArea.OrderByDescending(a => a.Count).FirstOrDefault(),
-        TopResponsible = loadByResponsible.OrderByDescending(r => r.Count).FirstOrDefault(),
-        LoadByArea = loadByArea.ToList(),
-        LoadByResponsible = loadByResponsible.ToList(),
-        StatusDistribution = Enum.GetValues<IncidentStatus>()
-            .Select(s => new StatusCountDto { Status = s, Count = incidents.Count(i => i.Status == s) })
-            .Where(d => d.Count > 0).ToList(),
-        PriorityDistribution = Enum.GetValues<IncidentPriority>()
-            .Select(p => new PriorityCountDto { Priority = p, Count = incidents.Count(i => i.Priority == p) })
-            .Where(d => d.Count > 0).ToList(),
-        AvgTimeByArea = avgTimeByArea
-    };
-}
+        var area = await db.Areas.FirstOrDefaultAsync(a => a.Id == incident.CurrentAreaId);
+        var responsibles = await GetResponsiblesInternalAsync(db, incident.Id);
+        var (activeHours, deadHours) = await ComputeHoursAsync(db, incident.Id);
+        var commentsCount = await db.IncidentComments.CountAsync(c => c.IncidentId == incident.Id);
+        var transfersCount = await db.IncidentTransfers.CountAsync(t => t.IncidentId == incident.Id);
 
-public async Task<IReadOnlyList<AreaLoadDto>> GetLoadByAreaAsync(Guid? onlyForUserId = null)
-{
-    List<Guid>? accessibleIds = onlyForUserId.HasValue ? await GetAccessibleIncidentIdsAsync(onlyForUserId.Value) : null;
-    var areas = await _db.Areas.ToListAsync();
-    var result = new List<AreaLoadDto>();
+        var involved = await db.IncidentParticipants
+            .Where(p => p.IncidentId == incident.Id)
+            .Select(p => p.SecurityUserId)
+            .Distinct()
+            .ToListAsync();
+        if (!involved.Contains(incident.CreatedByUserId)) involved.Add(incident.CreatedByUserId);
 
-    foreach (var area in areas)
-    {
-        var q = _db.Incidents.Where(i => i.CurrentAreaId == area.Id && i.Status != IncidentStatus.Cerrada);
-        if (accessibleIds != null) q = q.Where(i => accessibleIds.Contains(i.Id));
-        result.Add(new AreaLoadDto { AreaName = area.Name, AreaColor = area.Color, Count = await q.CountAsync() });
-    }
+        var everResponsible = await db.IncidentParticipants
+            .Where(p => p.IncidentId == incident.Id && p.Role == IncidentParticipantRole.Responsable)
+            .Select(p => p.SecurityUserId)
+            .Distinct()
+            .ToListAsync();
 
-    return result.OrderByDescending(a => a.Count).ToList();
-}
-
-public async Task<IReadOnlyList<ResponsibleLoadDto>> GetLoadByResponsibleAsync(Guid? onlyForUserId = null)
-{
-    var activeQuery = _db.IncidentParticipants
-        .Where(p => p.Role == IncidentParticipantRole.Responsable && p.RemovedAt == null);
-
-    if (onlyForUserId.HasValue)
-    {
-        var accessibleIds = await GetAccessibleIncidentIdsAsync(onlyForUserId.Value);
-        activeQuery = activeQuery.Where(p => accessibleIds.Contains(p.IncidentId));
-    }
-
-    var grouped = await activeQuery
-        .Join(_db.Incidents.Where(i => i.Status != IncidentStatus.Cerrada),
-            p => p.IncidentId, i => i.Id, (p, i) => p.SecurityUserId)
-        .GroupBy(uid => uid)
-        .Select(g => new { UserId = g.Key, Count = g.Count() })
-        .OrderByDescending(g => g.Count)
-        .Take(10)
-        .ToListAsync();
-
-    var result = new List<ResponsibleLoadDto>();
-    foreach (var g in grouped)
-    {
-        var user = await GetUserByIdAsync(g.UserId);
-        result.Add(new ResponsibleLoadDto { UserName = user?.FullName ?? "-", Initials = GetInitials(user?.FullName), Count = g.Count });
-    }
-    return result;
-}
-
-public async Task<IReadOnlyList<IncidentActivityFeedDto>> GetRecentActivityAsync(int take = 12, Guid? onlyForUserId = null)
-{
-    var query = _db.IncidentActivityEntries.AsQueryable();
-    if (onlyForUserId.HasValue)
-    {
-        var accessibleIds = await GetAccessibleIncidentIdsAsync(onlyForUserId.Value);
-        query = query.Where(a => accessibleIds.Contains(a.IncidentId));
-    }
-
-    var entries = await query.OrderByDescending(a => a.OccurredAt).Take(take).ToListAsync();
-    var result = new List<IncidentActivityFeedDto>();
-
-    foreach (var a in entries)
-    {
-        var incident = await GetIncidentByIdAsync(a.IncidentId);
-        var actor = await GetUserByIdAsync(a.ActorUserId);
-        result.Add(new IncidentActivityFeedDto
+        return new IncidentSummaryDto
         {
-            Id = a.Id, IncidentId = a.IncidentId,
-            IncidentCode = incident?.Code ?? "-", IncidentTitle = incident?.Title ?? "-",
-            Type = a.Type, ActorName = actor?.FullName ?? "-",
-            Description = a.Description, OccurredAt = a.OccurredAt
-        });
+            Id = incident.Id,
+            Code = incident.Code,
+            Title = incident.Title,
+            Status = incident.Status,
+            Priority = incident.Priority,
+            AreaName = area?.Name ?? "-",
+            AreaColor = area?.Color ?? "#334155",
+            Responsibles = responsibles,
+            CreatedByUserId = incident.CreatedByUserId,
+            InvolvedUserIds = involved,
+            EverResponsibleUserIds = everResponsible,
+            CreatedAt = incident.CreatedAt,
+            UpdatedAt = incident.UpdatedAt,
+            CommentsCount = commentsCount,
+            TransfersCount = transfersCount,
+            TotalActiveHours = activeHours,
+            TotalDeadHours = deadHours,
+            SlaHours = IncidentSlaHelper.SlaHoursFor(incident.Priority),
+            IsOverdue = IncidentSlaHelper.IsOverdue(incident.Priority, incident.CreatedAt, incident.ClosedAt)
+        };
     }
-    return result;
-}
 
-
-
-
-
-if (!_isAdmin)
-    _all = _all.Where(i => i.EverResponsibleUserIds.Contains(_me) || i.CreatedByUserId == _me).ToList();
-
-
-
-
-
-private bool _isAdmin;
-private Guid _me;
-
-protected override async Task OnInitializedAsync()
-{
-    _isAdmin = await Security.IsAdminAsync();
-    _me = await Security.GetCurrentUserIdAsync();
-
-    _areas = await Incidents.GetAreasAsync();
-    _users = await Incidents.GetUsersAsync();
-    _kpi = await Incidents.GetKpiSnapshotAsync(_isAdmin ? null : _me);
-    _recentActivity = await Incidents.GetRecentActivityAsync(12, _isAdmin ? null : _me);
-    _totalIncidents = _kpi.StatusDistribution.Sum(s => s.Count);
-    // ... resto igual
-}
-
-
-
-@if (!_isAdmin)
-{
-    <p class="form-hint" style="margin-bottom: var(--space-4);">
-        <Icon Name="info" /> Estos indicadores reflejan solo tus incidencias.
-    </p>
-}
-
-
-
-
-
-private bool _isAdmin;
-private bool _accessDenied;
-
-
-
-
-protected override async Task OnParametersSetAsync()
-{
-    _currentUserId = await Security.GetCurrentUserIdAsync();
-    _isAdmin = await Security.IsAdminAsync();
-    _areas = (await Incidents.GetAreasAsync()).ToList();
-
-    _accessDenied = false;
-    if (!_isAdmin && !await Incidents.CanUserAccessIncidentAsync(Id, _currentUserId))
+    private async Task<IncidentCommentDto> ToCommentDtoAsync(DaviWikiDbContext db, IncidentComment comment)
     {
-        _accessDenied = true;
-        _detail = null;
-        return;
+        var author = await db.SecurityUsers.FirstOrDefaultAsync(u => u.Id == comment.AuthorUserId);
+        return new IncidentCommentDto
+        {
+            Id = comment.Id, AuthorName = author?.FullName ?? "-",
+            AuthorInitials = GetInitials(author?.FullName), Text = comment.Text, CreatedAt = comment.CreatedAt
+        };
     }
 
-    await LoadDetail();
-}
+    private async Task<IncidentTransferDto> ToTransferDtoAsync(DaviWikiDbContext db, IncidentTransfer transfer)
+    {
+        var from = await db.SecurityUsers.FirstOrDefaultAsync(u => u.Id == transfer.FromUserId);
+        var to = await db.SecurityUsers.FirstOrDefaultAsync(u => u.Id == transfer.ToUserId);
+        var fromArea = await db.Areas.FirstOrDefaultAsync(a => a.Id == transfer.FromAreaId);
+        var toArea = await db.Areas.FirstOrDefaultAsync(a => a.Id == transfer.ToAreaId);
 
+        return new IncidentTransferDto
+        {
+            Id = transfer.Id,
+            FromUserName = from?.FullName ?? "-",
+            ToUserName = to?.FullName ?? "-",
+            FromAreaName = fromArea?.Name ?? "-",
+            ToAreaName = toArea?.Name ?? "-",
+            Reason = transfer.Reason,
+            TransferredAt = transfer.TransferredAt
+        };
+    }
 
+    private async Task<IncidentActivityDto> ToActivityDtoAsync(DaviWikiDbContext db, IncidentActivityEntry entry)
+    {
+        var actor = await db.SecurityUsers.FirstOrDefaultAsync(u => u.Id == entry.ActorUserId);
+        return new IncidentActivityDto
+        {
+            Id = entry.Id, Type = entry.Type, ActorName = actor?.FullName ?? "-",
+            Description = entry.Description, OccurredAt = entry.OccurredAt
+        };
+    }
 
+    private async Task<IncidentTimeSegmentDto> ToSegmentDtoAsync(DaviWikiDbContext db, IncidentTimeSegment segment)
+    {
+        var area = await db.Areas.FirstOrDefaultAsync(a => a.Id == segment.AreaId);
+        var user = segment.UserId.HasValue ? await db.SecurityUsers.FirstOrDefaultAsync(u => u.Id == segment.UserId.Value) : null;
 
-
-
-@if (_accessDenied)
-{
-    <div class="empty-state">
-        <Icon Name="lock" Class="empty-state__icon" />
-        <h2>No tienes acceso a esta incidencia</h2>
-        <p>Solo puedes ver incidencias que reportaste, o en las que eres o fuiste responsable.</p>
-        <a class="btn btn--primary" href="/incidencias/listado">Ver mis incidencias</a>
-    </div>
-}
-else if (_detail is null)
-{
-    @* ... bloque existente de "Incidencia no encontrada" ... *@
-}
-else
-{
-    @* ... resto de la página ... *@
-}
-
-
-
-
-
-
-@* Header: botón Cerrar *@
-@if (_detail.Status != IncidentStatus.Cerrada && (IsCurrentUserResponsible || _isAdmin))
-
-@* Header: botón Reactivar *@
-else if (_detail.Status == IncidentStatus.Cerrada && (IsCurrentUserCreator || _isAdmin))
-
-@* Aviso de "solo responsables pueden..." en Gestión *@
-@if (!IsCurrentUserResponsible && !_isAdmin && _detail.Status != IncidentStatus.Cerrada)
-
-@* Card "Sumar responsable" y "Estado" y "Reenviar a otra área" *@
-@if (_detail.Status != IncidentStatus.Cerrada && (IsCurrentUserResponsible || _isAdmin))
-
-
-
-
-
-
-private async Task TakeAction()
-{
-    if (_detail is null) return;
-    var ok = await Incidents.AddResponsibleAsync(_detail.Id, _currentUserId, ActorId, _isAdmin);
-    // ... resto igual
-}
-
-private async Task AddResponsibleAction()
-{
-    if (!_addResponsibleUserId.HasValue || _detail is null) return;
-    var ok = await Incidents.AddResponsibleAsync(_detail.Id, _addResponsibleUserId.Value, ActorId, _isAdmin);
-    // ... resto igual
-}
-
-private async Task RemoveResponsibleAction()
-{
-    if (_detail is null) return;
-    var ok = await Incidents.RemoveResponsibleAsync(_detail.Id, _currentUserId, ActorId, _isAdmin);
-    // ... resto igual
-}
-
-private async Task DelegateAction()
-{
-    if (_detail is null || !_delegateAreaId.HasValue || _delegateUserIds.Count == 0) return;
-    var ok = await Incidents.DelegateToAreaAsync(_detail.Id, _delegateAreaId.Value, _delegateUserIds.ToList(), _delegateReason, ActorId, _isAdmin);
-    // ... resto igual
-}
-
-private async Task SetStatusAction(IncidentStatus status)
-{
-    if (_detail is null) return;
-    var ok = await Incidents.ChangeStatusAsync(_detail.Id, status, ActorId, _isAdmin);
-    // ... resto igual
-}
-
-private async Task CloseIncidentAction()
-{
-    if (_detail is null) return;
-    var ok = await Incidents.CloseIncidentAsync(_detail.Id, ActorId, _isAdmin);
-    // ... resto igual
-}
-
-private async Task ReactivateAction()
-{
-    if (_detail is null) return;
-    var ok = await Incidents.ReactivateIncidentAsync(_detail.Id, ActorId, _isAdmin);
-    // ... resto igual
+        return new IncidentTimeSegmentDto
+        {
+            AreaName = area?.Name ?? "-",
+            UserName = user?.FullName,
+            StartedAt = segment.StartedAt,
+            EndedAt = segment.EndedAt,
+            IsActiveWork = segment.IsActiveWork,
+            DurationHours = Math.Round(segment.Duration.TotalHours, 1)
+        };
+    }
 }
