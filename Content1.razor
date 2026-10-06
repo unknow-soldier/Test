@@ -1,2 +1,496 @@
-<!-- Código corregido -->
-<span class="version-row__type-icon" style="@($"color:{color};")">
+if (newStatus != IncidentStatus.EnDesarrollo && newStatus != IncidentStatus.Resuelta) return false;
+
+
+
+
+
+
+@if (_detail.Status != IncidentStatus.Cerrada && (IsCurrentUserResponsible || _isAdmin))
+{
+    <button class="btn btn--danger btn--sm" @onclick="RequestCloseConfirmation">
+        <Icon Name="check-circle" /> Cerrar
+    </button>
+}
+
+
+
+
+
+
+private void RequestCloseConfirmation()
+{
+    _confirmTitle = "Cerrar incidencia";
+    _confirmMessage = $"¿Seguro que quieres cerrar \"{_detail!.Title}\"? Solo quien la reportó podrá reactivarla.";
+    _confirmButtonText = "Sí, cerrar";
+    _confirmButtonClass = "btn--danger";
+    _pendingAction = CloseIncidentAction;
+    _showConfirmModal = true;
+}
+
+private async Task CloseIncidentAction()
+{
+    if (_detail is null) return;
+    var ok = await Incidents.CloseIncidentAsync(_detail.Id, ActorId, _isAdmin);
+    if (ok)
+    {
+        await LoadDetail();
+        Toast.Show("Incidencia cerrada.", ToastVariant.Success, "check-circle");
+    }
+    else
+    {
+        Toast.Show("Solo un responsable activo puede cerrar la incidencia.", ToastVariant.Warning, "alert-triangle");
+    }
+}
+
+
+
+
+
+
+public async Task<bool> CloseIncidentAsync(Guid incidentId, Guid actorUserId, bool actingAsAdmin = false)
+{
+    await using var db = await _dbFactory.CreateDbContextAsync();
+    var incident = await db.Incidents.FirstOrDefaultAsync(i => i.Id == incidentId);
+    if (incident == null) return false;
+    if (incident.Status == IncidentStatus.Cerrada) return true; // ya estaba cerrada
+
+    // ... resto del método sin cambios
+}
+
+
+
+
+
+
+
+public partial class SlaPersonalizadoYObservadores : Migration
+{
+    protected override void Up(MigrationBuilder migrationBuilder)
+    {
+        migrationBuilder.Sql(@"
+            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Incidents') AND name = 'SlaDeadline')
+                ALTER TABLE dbo.Incidents ADD SlaDeadline datetime2 NULL;
+
+            UPDATE Incidents
+            SET SlaDeadline = DATEADD(HOUR,
+                CASE Priority
+                    WHEN 'Critica' THEN 4
+                    WHEN 'Alta' THEN 24
+                    WHEN 'Media' THEN 72
+                    WHEN 'Baja' THEN 168
+                    ELSE 72
+                END, CreatedAt)
+            WHERE SlaDeadline IS NULL;
+        ");
+    }
+
+    protected override void Down(MigrationBuilder migrationBuilder)
+    {
+        migrationBuilder.Sql(@"
+            IF EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Incidents') AND name = 'SlaDeadline')
+                ALTER TABLE dbo.Incidents DROP COLUMN SlaDeadline;
+        ");
+    }
+}
+
+
+
+
+
+
+public DateTime? SlaDeadline { get; set; }
+
+
+
+
+
+
+using CorpWiki.Domain.Entities.Incidents;
+
+namespace CorpWiki.Application.Helpers;
+
+public static class IncidentSlaHelper
+{
+    /// <summary>Solo para sugerir un valor inicial en el wizard; ya NO se usa para evaluar.</summary>
+    public static int SuggestedHoursFor(IncidentPriority priority) => priority switch
+    {
+        IncidentPriority.Critica => 4,
+        IncidentPriority.Alta => 24,
+        IncidentPriority.Media => 72,
+        IncidentPriority.Baja => 168,
+        _ => 72
+    };
+
+    public static bool IsOverdue(DateTime slaDeadline, IncidentStatus status, DateTime? resolvedAt, DateTime? closedAt)
+    {
+        var reference = status switch
+        {
+            IncidentStatus.Cerrada => closedAt ?? DateTime.Now,
+            IncidentStatus.Resuelta => resolvedAt ?? DateTime.Now,
+            _ => DateTime.Now
+        };
+        return reference > slaDeadline;
+    }
+
+    public static string StatusLabel(DateTime slaDeadline, IncidentStatus status, DateTime? resolvedAt, DateTime? closedAt)
+    {
+        var overdue = IsOverdue(slaDeadline, status, resolvedAt, closedAt);
+        return status switch
+        {
+            IncidentStatus.Cerrada => overdue ? "Se cerró fuera de SLA" : "Se cerró dentro de SLA",
+            IncidentStatus.Resuelta => overdue ? "Se resolvió fuera de SLA" : "Se resolvió dentro de SLA",
+            _ => overdue ? "Fuera de SLA" : "Dentro de SLA"
+        };
+    }
+
+    public static string Tooltip(DateTime createdAt, DateTime slaDeadline)
+    {
+        var span = slaDeadline - createdAt;
+        var label = span.TotalHours >= 24 ? $"{Math.Round(span.TotalHours / 24, 1)} días" : $"{Math.Round(span.TotalHours, 1)} horas";
+        return $"Tiempo límite definido al crear la incidencia: {label} (vence {slaDeadline:d MMM, HH:mm}).";
+    }
+}
+
+
+
+
+public async Task<Incident> CreateIncidentAsync(
+    string title, string description, Guid areaId, IncidentPriority priority,
+    Guid createdByUserId, Guid? initialResponsibleUserId, List<ArticleContentBlock>? content = null,
+    DateTime? slaDeadline = null)
+{
+    // ...
+    var incident = new Incident
+    {
+        // ... igual que antes ...
+        SlaDeadline = slaDeadline ?? now.AddHours(IncidentSlaHelper.SuggestedHoursFor(priority)),
+        // ...
+    };
+    // resto sin cambios
+}
+
+
+
+
+
+var slaDeadline = incident.SlaDeadline ?? incident.CreatedAt.AddHours(IncidentSlaHelper.SuggestedHoursFor(incident.Priority));
+// ...
+SlaDeadline = slaDeadline,
+SlaHours = Math.Round((slaDeadline - incident.CreatedAt).TotalHours, 1),
+IsOverdue = IncidentSlaHelper.IsOverdue(slaDeadline, incident.Status, incident.ResolvedAt, incident.ClosedAt),
+SlaStatusLabel = IncidentSlaHelper.StatusLabel(slaDeadline, incident.Status, incident.ResolvedAt, incident.ClosedAt),
+SlaTooltip = IncidentSlaHelper.Tooltip(incident.CreatedAt, slaDeadline),
+
+
+
+
+OverdueCount = active.Count(i => IncidentSlaHelper.IsOverdue(
+    i.SlaDeadline ?? i.CreatedAt.AddHours(IncidentSlaHelper.SuggestedHoursFor(i.Priority)),
+    i.Status, i.ResolvedAt, i.ClosedAt)),
+
+
+
+
+public DateTime SlaDeadline { get; set; }
+public double SlaHours { get; set; }
+public bool IsOverdue { get; set; }
+public string SlaStatusLabel { get; set; } = string.Empty;
+public string SlaTooltip { get; set; } = string.Empty;
+
+
+
+
+<div class="form-group">
+    <label class="form-label">Prioridad</label>
+    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        @foreach (var priority in Enum.GetValues<IncidentPriority>())
+        {
+            var p = priority;
+            <button type="button" class="chip @(_model.Priority == p ? "chip--active" : "")" @onclick="() => OnPriorityChanged(p)">
+                @IncidentLabels.Priority(p)
+            </button>
+        }
+    </div>
+</div>
+<div class="form-group">
+    <label class="form-label" for="inc-sla">Tiempo límite (SLA) <span class="form-required">*</span></label>
+    <input id="inc-sla" type="datetime-local" class="input" @bind="_model.SlaDeadline" @bind:after="() => _slaManuallyEdited = true" />
+    <p class="form-hint">Sugerido según la prioridad. Podés ajustarlo si esta incidencia necesita más o menos tiempo.</p>
+</div>
+
+
+
+
+private bool _slaManuallyEdited;
+
+protected override async Task OnInitializedAsync()
+{
+    _areas = (await Incidents.GetAreasAsync()).ToList();
+    _users = (await Incidents.GetUsersAsync()).OrderBy(u => u.FullName).ToList();
+    _model.SlaDeadline = DateTime.Now.AddHours(IncidentSlaHelper.SuggestedHoursFor(_model.Priority));
+}
+
+private void OnPriorityChanged(IncidentPriority p)
+{
+    _model.Priority = p;
+    if (!_slaManuallyEdited)
+        _model.SlaDeadline = DateTime.Now.AddHours(IncidentSlaHelper.SuggestedHoursFor(p));
+}
+
+
+
+var created = await Incidents.CreateIncidentAsync(
+    _model.Title, _model.Description, _model.AreaId.Value, _model.Priority,
+    _model.CreatedByUserId.Value, _model.ResponsibleUserId, _model.Content, _model.SlaDeadline);
+
+
+
+
+
+public async Task<bool> CanUserAccessIncidentAsync(Guid incidentId, Guid userId)
+{
+    await using var db = await _dbFactory.CreateDbContextAsync();
+    var incident = await db.Incidents.FirstOrDefaultAsync(i => i.Id == incidentId);
+    if (incident == null) return false;
+    if (incident.CreatedByUserId == userId) return true;
+
+    // Cualquier rol (responsable, colaborador u observador), activo o pasado.
+    return await db.IncidentParticipants.AnyAsync(p => p.IncidentId == incidentId && p.SecurityUserId == userId);
+}
+
+
+
+
+Task<bool> InviteObserverAsync(Guid incidentId, Guid userId, Guid actorUserId, bool actingAsAdmin = false);
+Task<bool> RemoveObserverAsync(Guid incidentId, Guid userId, Guid actorUserId, bool actingAsAdmin = false);
+
+
+
+
+public async Task<bool> InviteObserverAsync(Guid incidentId, Guid userId, Guid actorUserId, bool actingAsAdmin = false)
+{
+    await using var db = await _dbFactory.CreateDbContextAsync();
+
+    var incident = await db.Incidents.FirstOrDefaultAsync(i => i.Id == incidentId);
+    if (incident == null) return false;
+
+    if (!actingAsAdmin)
+    {
+        var fueResponsable = await db.IncidentParticipants.AnyAsync(p =>
+            p.IncidentId == incidentId && p.SecurityUserId == actorUserId && p.Role == IncidentParticipantRole.Responsable);
+        if (!fueResponsable) return false;
+    }
+
+    var user = await db.SecurityUsers.FirstOrDefaultAsync(u => u.Id == userId);
+    if (user == null) return false;
+
+    var existingRow = await db.IncidentParticipants.FirstOrDefaultAsync(p =>
+        p.IncidentId == incidentId && p.SecurityUserId == userId && p.RemovedAt == null);
+    if (existingRow != null) return true; // ya tiene algún acceso activo
+
+    var now = DateTime.Now;
+    db.IncidentParticipants.Add(new IncidentParticipant
+    {
+        Id = Guid.NewGuid(), IncidentId = incidentId, SecurityUserId = userId,
+        AreaId = incident.CurrentAreaId, Role = IncidentParticipantRole.Observador, AssignedAt = now
+    });
+
+    var actor = await db.SecurityUsers.FirstOrDefaultAsync(u => u.Id == actorUserId);
+    await LogActivityAsync(db, incidentId, IncidentActivityType.Editada, actorUserId,
+        $"{actor?.FullName ?? "-"} invitó a {user.FullName} como observador.", now, newValue: user.FullName);
+
+    await db.SaveChangesAsync();
+    return true;
+}
+
+public async Task<bool> RemoveObserverAsync(Guid incidentId, Guid userId, Guid actorUserId, bool actingAsAdmin = false)
+{
+    await using var db = await _dbFactory.CreateDbContextAsync();
+
+    if (!actingAsAdmin)
+    {
+        var fueResponsable = await db.IncidentParticipants.AnyAsync(p =>
+            p.IncidentId == incidentId && p.SecurityUserId == actorUserId && p.Role == IncidentParticipantRole.Responsable);
+        if (!fueResponsable) return false;
+    }
+
+    var row = await db.IncidentParticipants.FirstOrDefaultAsync(p =>
+        p.IncidentId == incidentId && p.SecurityUserId == userId &&
+        p.Role == IncidentParticipantRole.Observador && p.RemovedAt == null);
+    if (row == null) return false;
+
+    row.RemovedAt = DateTime.Now;
+
+    var user = await db.SecurityUsers.FirstOrDefaultAsync(u => u.Id == userId);
+    var actor = await db.SecurityUsers.FirstOrDefaultAsync(u => u.Id == actorUserId);
+    await LogActivityAsync(db, incidentId, IncidentActivityType.Editada, actorUserId,
+        $"{actor?.FullName ?? "-"} quitó a {user?.FullName ?? "-"} como observador.", DateTime.Now);
+
+    await db.SaveChangesAsync();
+    return true;
+}
+
+
+
+
+
+
+<div class="card widget">
+    <h4 class="widget__title"><Icon Name="eye" />Visibilidad</h4>
+    <p class="form-hint">Esta incidencia es privada: solo la ven quienes participan en ella y los administradores. Invitá a alguien más como observador para que la siga sin poder gestionarla.</p>
+
+    @foreach (var o in Observers)
+    {
+        <div class="activity-row">
+            <UserAvatar FullName="@o.FullName" Initials="@o.Initials" ColorFrom="@o.AvatarColorFrom" ColorTo="@o.AvatarColorTo" Size="UserAvatar.AvatarSize.Sm" />
+            <div style="flex:1; min-width:0;">
+                <p class="activity-row__text"><strong>@o.FullName</strong> <span class="badge badge--outline">Observador</span></p>
+                <p class="activity-row__time">@o.Position</p>
+            </div>
+            <button class="btn btn--ghost btn--sm" @onclick="() => RemoveObserverAction(o.UserId)" title="Quitar observador">
+                <Icon Name="x" />
+            </button>
+        </div>
+    }
+
+    <div class="form-group" style="margin-top:var(--space-3);">
+        <select class="input" @bind="_inviteObserverUserId">
+            <option value="">Invitar a alguien como observador</option>
+            @foreach (var u in _allUsersForInvite.Where(u => !_detail.Participants.Any(p => p.UserId == u.Id && p.RemovedAt == null)))
+            {
+                <option value="@u.Id">@u.FullName - @u.Position</option>
+            }
+        </select>
+    </div>
+    <button class="btn btn--secondary btn--sm" @onclick="InviteObserverAction" disabled="@(!_inviteObserverUserId.HasValue)">
+        <Icon Name="user-plus" /> Invitar
+    </button>
+</div>
+
+
+
+
+private List<SecurityUser> _allUsersForInvite = new();
+private Guid? _inviteObserverUserId;
+
+private List<IncidentParticipantDto> Observers =>
+    _detail?.Participants.Where(p => p.Role == IncidentParticipantRole.Observador && p.RemovedAt == null).ToList() ?? new();
+
+private async Task InviteObserverAction()
+{
+    if (!_inviteObserverUserId.HasValue || _detail is null) return;
+    var ok = await Incidents.InviteObserverAsync(_detail.Id, _inviteObserverUserId.Value, ActorId, _isAdmin);
+    _inviteObserverUserId = null;
+    if (ok)
+    {
+        await LoadDetail();
+        Toast.Show("Observador invitado.", ToastVariant.Success, "eye");
+    }
+    else
+    {
+        Toast.Show("No se pudo invitar.", ToastVariant.Warning, "alert-triangle");
+    }
+}
+
+private async Task RemoveObserverAction(Guid userId)
+{
+    if (_detail is null) return;
+    var ok = await Incidents.RemoveObserverAsync(_detail.Id, userId, ActorId, _isAdmin);
+    if (ok)
+    {
+        await LoadDetail();
+        Toast.Show("Observador removido.", ToastVariant.Info, "user-x");
+    }
+}
+
+
+
+
+if (!_isAdmin)
+    _all = _all.Where(i => i.InvolvedUserIds.Contains(_me)).ToList();
+
+
+
+
+if (!actingAsAdmin && incident.CreatedByUserId != actorUserId)
+{
+    await transaction.RollbackAsync();
+    return false;
+}
+
+
+
+private bool CanDelete => _detail is not null && (_isAdmin || _detail.CreatedByUserId == _currentUserId);
+
+
+
+
+SELECT fk.name, fk.delete_referential_action_desc
+FROM sys.foreign_keys fk
+WHERE fk.name = 'FK_IncidentActivityEntries_Incidents';
+
+
+
+
+
+migrationBuilder.Sql(@"
+    DECLARE @fkId INT;
+    SELECT @fkId = fk.object_id
+    FROM sys.foreign_keys fk
+    WHERE fk.name = 'FK_IncidentActivityEntries_Incidents' AND fk.delete_referential_action <> 1;
+
+    IF @fkId IS NOT NULL
+    BEGIN
+        ALTER TABLE dbo.IncidentActivityEntries DROP CONSTRAINT FK_IncidentActivityEntries_Incidents;
+        ALTER TABLE dbo.IncidentActivityEntries
+            ADD CONSTRAINT FK_IncidentActivityEntries_Incidents
+            FOREIGN KEY (IncidentId) REFERENCES dbo.Incidents(Id) ON DELETE CASCADE;
+    END
+");
+
+
+
+
+
+public async Task<bool> DeleteIncidentAsync(Guid incidentId, Guid actorUserId, bool actingAsAdmin = false)
+{
+    await using var db = await _dbFactory.CreateDbContextAsync();
+    await using var transaction = await db.Database.BeginTransactionAsync();
+
+    try
+    {
+        var incident = await db.Incidents.FirstOrDefaultAsync(i => i.Id == incidentId);
+        if (incident == null) { await transaction.RollbackAsync(); return false; }
+
+        if (!actingAsAdmin && incident.CreatedByUserId != actorUserId)
+        {
+            await transaction.RollbackAsync();
+            return false;
+        }
+
+        await db.Notifications.Where(n => n.IncidentId == incidentId).ExecuteDeleteAsync();
+        await db.IncidentArticleLinks.Where(l => l.IncidentId == incidentId).ExecuteDeleteAsync();
+        await db.IncidentTimeSegments.Where(s => s.IncidentId == incidentId).ExecuteDeleteAsync();
+        await db.IncidentActivityEntries.Where(a => a.IncidentId == incidentId).ExecuteDeleteAsync();
+        await db.IncidentTransfers.Where(t => t.IncidentId == incidentId).ExecuteDeleteAsync();
+        await db.IncidentAttachments.Where(a => a.IncidentId == incidentId).ExecuteDeleteAsync();
+        await db.IncidentComments.Where(c => c.IncidentId == incidentId).ExecuteDeleteAsync();
+        await db.IncidentParticipants.Where(p => p.IncidentId == incidentId).ExecuteDeleteAsync();
+
+        db.Incidents.Remove(incident);
+        await db.SaveChangesAsync();
+
+        await transaction.CommitAsync();
+        return true;
+    }
+    catch (Exception ex)
+    {
+        await transaction.RollbackAsync();
+        _logger.LogError(ex, "Error eliminando incidencia {IncidentId}", incidentId);
+        return false;
+    }
+}
+
+
+
+
