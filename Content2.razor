@@ -1,103 +1,18 @@
-**free
-//--------------------------------------------------------------------
-// CYBE0006PG - Programa de prueba
-// Llama a la COPIA de prueba de la CL (CYBE0006CT) con los mismos
-// 35 parametros y largos que declara CYBE0006CL (&V1 a &V35).
-// Los valores son los que carga CYBE0006C2 (datos de prueba UAT).
-//
-// Compilar:
-//   CRTBNDRPG PGM(CYBERPGM/CYBE0006PG) SRCFILE(CYBERPGM/QRPGLESRC)
-//             SRCMBR(CYBE0006PG)
-// (ajusta el archivo fuente si usas otro)
-//--------------------------------------------------------------------
-ctl-opt dftactgrp(*no) actgrp(*new) option(*srcstmt:*nodebugio);
+INSERT INTO BCAH96DTA.UTLRACTA
+ (UPAYERCD, USTSREM, UBENFNAM, UBENMNAM, UBENLNAM, UBEN2NAM,
+  UBENCTRY, UBENSTAT, UBENPOST, UBENPHON, UBENCITY, UBENADR1,
+  UORGCUR, UORGCNTR, UORGAMT, USNDFNAM, USNDMNAM, USNDLNAM,
+  USND2NAM, USNDSTAT, USNDPOST, USNDPHON, USNDCITY, USNDADDR,
+  UDATRECI)
+VALUES
+ ('5000000001', 'P', 'JUAN', 'CARLOS', 'PEREZ', 'LOPEZ',
+  'HN', 'FM', '11101', '99887766', 'TEGUCIGALPA', 'COL PRUEBA 123',
+  'USD', 'US', '1500.00', 'MARIA', 'ELENA', 'GOMEZ',
+  'RUIZ', 'TX', '75001', '2145550123', 'DALLAS', 'CALLE PRUEBA 456',
+  '20261007');
 
-// Prototipo: parametros por referencia, con el largo exacto de la CL
-dcl-pr LlamaCL extpgm('CYBE0006CT');
-  *n char(40);    // V1
-  *n char(20);    // V2
-  *n char(15);    // V3
-  *n char(10);    // V4
-  *n char(80);    // V5
-  *n char(30);    // V6
-  *n char(15);    // V7
-  *n char(15);    // V8
-  *n char(80);    // V9
-  *n char(80);    // V10
-  *n char(5);     // V11
-  *n char(15);    // V12
-  *n char(5);     // V13
-  *n char(30);    // V14
-  *n char(50);    // V15
-  *n char(10);    // V16
-  *n char(30);    // V17
-  *n char(20);    // V18
-  *n char(5);     // V19
-  *n char(20);    // V20
-  *n char(15);    // V21
-  *n char(5);     // V22
-  *n char(15);    // V23
-  *n char(10);    // V24
-  *n char(5);     // V25
-  *n char(15);    // V26
-  *n char(20);    // V27
-  *n char(20);    // V28
-  *n char(20);    // V29
-  *n char(20);    // V30
-  *n char(100);   // V31
-  *n char(20);    // V32
-  *n char(20);    // V33
-  *n char(30);    // V34
-  *n char(150);   // V35
-end-pr;
 
-// Variables (mismos valores que CYBE0006C2)
-dcl-s v1  char(40)  inz('NotificacionEstadoTransaccion');
-dcl-s v2  char(20)  inz('9');
-dcl-s v3  char(15)  inz('1');
-dcl-s v4  char(10)  inz('2');
-dcl-s v5  char(80)  inz('0');
-dcl-s v6  char(30)  inz('PRUEBA110');
-dcl-s v7  char(15)  inz('1');
-dcl-s v8  char(15)  inz('1.0');
-dcl-s v9  char(80)  inz('5850114');
-dcl-s v10 char(80)  inz('h38y');
-dcl-s v11 char(5)   inz('ES');
-dcl-s v12 char(15)  inz('HN');
-dcl-s v13 char(5)   inz('HN');
-dcl-s v14 char(30)  inz('2026280900000');
-dcl-s v15 char(50)  inz('EXECUTED_WITH_REJECTIONS');
-dcl-s v16 char(10)  inz('0');
-dcl-s v17 char(30)  inz('20262809135500000');
-dcl-s v18 char(20)  inz('72271.06');
-dcl-s v19 char(5)   inz('');
-dcl-s v20 char(20)  inz('0');
-dcl-s v21 char(15)  inz('0');
-dcl-s v22 char(5)   inz('HNL');
-dcl-s v23 char(15)  inz('0');
-dcl-s v24 char(10)  inz('0');
-dcl-s v25 char(5)   inz('HNL');
-dcl-s v26 char(15)  inz('');
-dcl-s v27 char(20)  inz('0');
-dcl-s v28 char(20)  inz('0');
-dcl-s v29 char(20)  inz('0');
-dcl-s v30 char(20)  inz('0');
-// TODO: copiar el texto COMPLETO de &V31 desde CYBE0006C2
-//       (en la foto se veia cortado en "APIINFOREC-I")
-dcl-s v31 char(100) inz('Recibo pagado anteriormente (APIINFOREC-I');
-dcl-s v32 char(20)  inz('0');
-dcl-s v33 char(20)  inz('0');
-dcl-s v34 char(30)  inz('');
-dcl-s v35 char(150) inz('');
 
-monitor;
-  LlamaCL( v1 : v2 : v3 : v4 : v5 : v6 : v7 : v8 : v9 : v10 :
-           v11 : v12 : v13 : v14 : v15 : v16 : v17 : v18 : v19 : v20 :
-           v21 : v22 : v23 : v24 : v25 : v26 : v27 : v28 : v29 : v30 :
-           v31 : v32 : v33 : v34 : v35 );
-on-error;
-  dsply 'Error al llamar CYBE0006CT (revisa la lista de bibliotecas)';
-endmon;
 
-*inlr = *on;
-return;
+---------------------------------
+DELETE FROM BCAH96DTA.UTLRACTA WHERE UPAYERCD = '5000000001';
