@@ -1,73 +1,24 @@
-public async Task<bool> DeleteIncidentAsync(Guid incidentId, Guid actorUserId, bool actingAsAdmin = false)
-{
-    await using var db = await _dbFactory.CreateDbContextAsync();
-    var strategy = db.Database.CreateExecutionStrategy();
+var existingCreatorPart = db.IncidentParticipants.Local
+    .FirstOrDefault(p => p.IncidentId == incident.Id && p.SecurityUserId == createdByUserId);
 
-    return await strategy.ExecuteAsync(async () =>
+IncidentParticipant creatorParticipant;
+if (existingCreatorPart == null)
+{
+    creatorParticipant = new IncidentParticipant
     {
-        await using var transaction = await db.Database.BeginTransactionAsync();
-
-        try
-        {
-            var incident = await db.Incidents.FirstOrDefaultAsync(i => i.Id == incidentId);
-            if (incident == null) { await transaction.RollbackAsync(); return false; }
-
-            if (!actingAsAdmin && incident.CreatedByUserId != actorUserId)
-            {
-                await transaction.RollbackAsync();
-                return false;
-            }
-
-            await db.Notifications.Where(n => n.IncidentId == incidentId).ExecuteDeleteAsync();
-            await db.IncidentArticleLinks.Where(l => l.IncidentId == incidentId).ExecuteDeleteAsync();
-            await db.IncidentTimeSegments.Where(s => s.IncidentId == incidentId).ExecuteDeleteAsync();
-            await db.IncidentActivityEntries.Where(a => a.IncidentId == incidentId).ExecuteDeleteAsync();
-            await db.IncidentTransfers.Where(t => t.IncidentId == incidentId).ExecuteDeleteAsync();
-            await db.IncidentAttachments.Where(a => a.IncidentId == incidentId).ExecuteDeleteAsync();
-            await db.IncidentComments.Where(c => c.IncidentId == incidentId).ExecuteDeleteAsync();
-            await db.IncidentParticipants.Where(p => p.IncidentId == incidentId).ExecuteDeleteAsync();
-
-            db.Incidents.Remove(incident);
-            await db.SaveChangesAsync();
-
-            await transaction.CommitAsync();
-            return true;
-        }
-        catch (Exception ex)
-        {
-            await transaction.RollbackAsync();
-            _logger.LogError(ex, "Error eliminando incidencia {IncidentId}", incidentId);
-            return false;
-        }
-    });
+        Id = Guid.NewGuid(), 
+        IncidentId = incident.Id, 
+        SecurityUserId = createdByUserId,
+        AreaId = areaId, 
+        Role = IncidentParticipantRole.Colaborador, 
+        AssignedAt = now
+    };
+    db.IncidentParticipants.Add(creatorParticipant);
 }
-
-
-
-
-
-
-
-
-db.IncidentParticipants.Add(new IncidentParticipant { ... Role = Colaborador ... }); // (A) se agrega en memoria, aún NO en la BD
-
-// ... más código ...
-
-if (initialResponsibleUserId.Value == createdByUserId)
+else
 {
-    var creatorRow = await db.IncidentParticipants.FirstOrDefaultAsync(p => ...); // (B) consulta la BASE DE DATOS
-    if (creatorRow != null) creatorRow.Role = IncidentParticipantRole.Responsable;
+    creatorParticipant = existingCreatorPart;
 }
-
-
-
-
-var creatorParticipant = new IncidentParticipant
-{
-    Id = Guid.NewGuid(), IncidentId = incident.Id, SecurityUserId = createdByUserId,
-    AreaId = areaId, Role = IncidentParticipantRole.Colaborador, AssignedAt = now
-};
-db.IncidentParticipants.Add(creatorParticipant);
 
 var creator = await db.SecurityUsers.FirstOrDefaultAsync(u => u.Id == createdByUserId);
 await LogActivityAsync(db, incident.Id, IncidentActivityType.Creada, createdByUserId,
@@ -83,15 +34,29 @@ if (initialResponsibleUserId.HasValue)
     {
         if (initialResponsibleUserId.Value == createdByUserId)
         {
-            creatorParticipant.Role = IncidentParticipantRole.Responsable; // mismo objeto en memoria, sin re-consultar
+            creatorParticipant.Role = IncidentParticipantRole.Responsable;
         }
         else
         {
-            db.IncidentParticipants.Add(new IncidentParticipant
+            var existingRespPart = db.IncidentParticipants.Local
+                .FirstOrDefault(p => p.IncidentId == incident.Id && p.SecurityUserId == initialResponsibleUserId.Value);
+
+            if (existingRespPart == null)
             {
-                Id = Guid.NewGuid(), IncidentId = incident.Id, SecurityUserId = initialResponsibleUserId.Value,
-                AreaId = areaId, Role = IncidentParticipantRole.Responsable, AssignedAt = now
-            });
+                db.IncidentParticipants.Add(new IncidentParticipant
+                {
+                    Id = Guid.NewGuid(), 
+                    IncidentId = incident.Id, 
+                    SecurityUserId = initialResponsibleUserId.Value,
+                    AreaId = areaId, 
+                    Role = IncidentParticipantRole.Responsable, 
+                    AssignedAt = now
+                });
+            }
+            else
+            {
+                existingRespPart.Role = IncidentParticipantRole.Responsable;
+            }
         }
 
         responsibleAssigned = true;
@@ -115,137 +80,3 @@ if (respUser != null && responsibleAssigned && respUser.Id != createdByUserId)
         respUser, createdByUserId, creator?.FullName ?? "-", NotificationType.IncidentAssigned);
 
 return incident;
-
-
-
-
-
-
-
-
-using CorpWiki.Application.DTOs.Incidents;
-using CorpWiki.Domain.Entities.Incidents;
-
-namespace CorpWiki.Application.Helpers;
-
-public static class IncidentInsightHelper
-{
-    public record Insight(string Icon, string Text, string Color);
-
-    public static List<Insight> Build(IncidentDetailDto d, DateTime now)
-    {
-        var insights = new List<Insight>();
-        var isOpen = d.Status != IncidentStatus.Cerrada;
-
-        if (isOpen && d.Status != IncidentStatus.Resuelta)
-        {
-            var remaining = d.SlaDeadline - now;
-            if (remaining.TotalMinutes <= 0)
-                insights.Add(new("alarm-clock", $"Venció el límite hace {Span(now - d.SlaDeadline)}", "#ef4444"));
-            else if (remaining.TotalHours <= 2)
-                insights.Add(new("alarm-clock", $"Vence en {Span(remaining)}", "#f59e0b"));
-        }
-
-        if (isOpen && d.Responsibles.Count == 0)
-        {
-            var lastActivity = d.Activity.OrderByDescending(a => a.OccurredAt).FirstOrDefault();
-            var since = lastActivity != null ? now - lastActivity.OccurredAt : TimeSpan.Zero;
-            insights.Add(new("user-x", $"Sin responsable desde hace {Span(since)}", "#ef4444"));
-        }
-
-        if (d.Transfers.Count >= 3)
-            insights.Add(new("arrow-right", $"Reenviada {d.Transfers.Count} veces", "#f59e0b"));
-
-        if (d.ReactivationCount > 0)
-            insights.Add(new("rotate-ccw", $"Reactivada {d.ReactivationCount} {(d.ReactivationCount == 1 ? "vez" : "veces")}", "#f59e0b"));
-
-        if (!isOpen && !d.IsOverdue)
-        {
-            var total = d.TotalActiveHours + d.TotalDeadHours;
-            if (total > 0 && d.SlaHours > 0 && total <= d.SlaHours * 0.3)
-                insights.Add(new("zap", "Resuelta muy por debajo del tiempo límite", "#22c55e"));
-        }
-
-        if (isOpen && d.TotalDeadHours > d.TotalActiveHours && d.TotalDeadHours >= 1)
-            insights.Add(new("clock", $"Más tiempo en espera ({Fmt(d.TotalDeadHours)}) que trabajando ({Fmt(d.TotalActiveHours)})", "#f59e0b"));
-
-        return insights;
-    }
-
-    private static string Span(TimeSpan span)
-    {
-        span = span.Duration();
-        if (span.TotalDays >= 1) return $"{(int)span.TotalDays}d {span.Hours}h";
-        if (span.TotalHours >= 1) return $"{(int)span.TotalHours}h {span.Minutes}min";
-        return $"{Math.Max(1, (int)span.TotalMinutes)} min";
-    }
-
-    private static string Fmt(double hours) => hours < 1 ? $"{Math.Round(hours * 60)} min" : $"{hours:0.#} h";
-}
-
-
-
-
-
-
-
-private System.Threading.Timer? _slaTimer;
-private DateTime _clockNow = DateTime.Now;
-
-private void EnsureSlaTimer()
-{
-    _slaTimer ??= new System.Threading.Timer(async _ =>
-    {
-        _clockNow = DateTime.Now;
-        await InvokeAsync(StateHasChanged);
-    }, null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
-}
-
-public void Dispose() => _slaTimer?.Dispose();
-
-
-
-
-@{
-    var insights = _detail is not null ? IncidentInsightHelper.Build(_detail, _clockNow) : new();
-}
-@if (insights.Count > 0)
-{
-    <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom: var(--space-4);">
-        @foreach (var insight in insights)
-        {
-            <span style="display:inline-flex; align-items:center; gap:6px; padding:6px 12px; border-radius:20px; font-size:0.82rem; font-weight:600; color:@insight.Color; background:@ColorUtils.ToRgba(insight.Color, 0.12); border:1px solid @ColorUtils.ToRgba(insight.Color, 0.3);">
-                <Icon Name="@insight.Icon" /> @insight.Text
-            </span>
-        }
-    </div>
-}
-
-
-
-
-
-<style>
-    @@keyframes incident-pulse {
-        0% { box-shadow: 0 0 0 0 rgba(34,197,94,0.5); }
-        70% { box-shadow: 0 0 0 8px rgba(34,197,94,0); }
-        100% { box-shadow: 0 0 0 0 rgba(34,197,94,0); }
-    }
-    .incident-pulse-ring {
-        border-radius: 50%;
-        animation: incident-pulse 2s infinite;
-    }
-</style>
-
-
-
-<span class="@(_detail.Status == IncidentStatus.EnDesarrollo || _detail.Status == IncidentStatus.Reactivada ? "incident-pulse-ring" : "")">
-    <UserAvatar FullName="@r.FullName" Initials="@r.Initials" ColorFrom="@r.AvatarColorFrom" ColorTo="@r.AvatarColorTo" Size="UserAvatar.AvatarSize.Sm" />
-</span>
-
-
-
-
-
-
-
