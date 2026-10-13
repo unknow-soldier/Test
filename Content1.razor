@@ -1,82 +1,307 @@
-var existingCreatorPart = db.IncidentParticipants.Local
-    .FirstOrDefault(p => p.IncidentId == incident.Id && p.SecurityUserId == createdByUserId);
+using CorpWiki.Domain.Entities.Incidents;
 
-IncidentParticipant creatorParticipant;
-if (existingCreatorPart == null)
+namespace CorpWiki.Application.DTOs.Incidents;
+
+public class IncidentRelatedDto
 {
-    creatorParticipant = new IncidentParticipant
-    {
-        Id = Guid.NewGuid(), 
-        IncidentId = incident.Id, 
-        SecurityUserId = createdByUserId,
-        AreaId = areaId, 
-        Role = IncidentParticipantRole.Colaborador, 
-        AssignedAt = now
-    };
-    db.IncidentParticipants.Add(creatorParticipant);
-}
-else
-{
-    creatorParticipant = existingCreatorPart;
+    public Guid Id { get; set; }
+    public string Code { get; set; } = string.Empty;
+    public string Title { get; set; } = string.Empty;
+    public IncidentStatus Status { get; set; }
+    public IncidentPriority Priority { get; set; }
+    public string AreaName { get; set; } = string.Empty;
+    public string AreaColor { get; set; } = string.Empty;
+    public int Score { get; set; }
+    public List<string> Reasons { get; set; } = new();
+    public DateTime CreatedAt { get; set; }
+    public DateTime? ClosedAt { get; set; }
 }
 
-var creator = await db.SecurityUsers.FirstOrDefaultAsync(u => u.Id == createdByUserId);
-await LogActivityAsync(db, incident.Id, IncidentActivityType.Creada, createdByUserId,
-    $"{creator?.FullName ?? "Alguien"} creó la incidencia \"{incident.Title}\".", now);
-
-SecurityUser? respUser = null;
-var responsibleAssigned = false;
-
-if (initialResponsibleUserId.HasValue)
+public class IncidentArticleSuggestionDto
 {
-    respUser = await db.SecurityUsers.FirstOrDefaultAsync(u => u.Id == initialResponsibleUserId.Value);
-    if (respUser != null && respUser.AreaId == areaId)
+    public Guid ArticleId { get; set; }
+    public string Title { get; set; } = string.Empty;
+    public string Slug { get; set; } = string.Empty;
+    public List<string> MatchedKeywords { get; set; } = new();
+    public bool AlreadyLinked { get; set; }
+}
+
+
+
+
+
+
+
+Task<IReadOnlyList<IncidentRelatedDto>> GetRelatedIncidentsAsync(Guid incidentId, int take = 6);
+Task<IncidentRelatedDto?> ExplainIncidentRelationAsync(Guid sourceIncidentId, Guid targetIncidentId);
+Task<IReadOnlyList<IncidentArticleSuggestionDto>> GetSuggestedArticlesAsync(Guid incidentId, int take = 6);
+
+
+
+
+
+
+private readonly ISearchDataService _searchDataService;
+
+public IncidentService(
+    IDbContextFactory<DaviWikiDbContext> dbFactory,
+    IEmailSenderService emailSender,
+    INotificationService notificationService,
+    ISearchDataService searchDataService,
+    ILogger<IncidentService> logger)
+{
+    _dbFactory = dbFactory;
+    _emailSender = emailSender;
+    _notificationService = notificationService;
+    _searchDataService = searchDataService;
+    _logger = logger;
+}
+
+
+
+
+
+
+// =========================================================================
+// INCIDENCIAS Y ARTÍCULOS RELACIONADOS (por palabras clave)
+// =========================================================================
+
+public async Task<IReadOnlyList<IncidentRelatedDto>> GetRelatedIncidentsAsync(Guid incidentId, int take = 6)
+{
+    await using var db = await _dbFactory.CreateDbContextAsync();
+    return await GetRelatedIncidentsInternalAsync(db, incidentId, take);
+}
+
+public async Task<IncidentRelatedDto?> ExplainIncidentRelationAsync(Guid sourceIncidentId, Guid targetIncidentId)
+{
+    var related = await GetRelatedIncidentsAsync(sourceIncidentId, 999);
+    return related.FirstOrDefault(r => r.Id == targetIncidentId);
+}
+
+public async Task<IReadOnlyList<IncidentArticleSuggestionDto>> GetSuggestedArticlesAsync(Guid incidentId, int take = 6)
+{
+    await using var db = await _dbFactory.CreateDbContextAsync();
+    return await GetSuggestedArticlesInternalAsync(db, incidentId, take);
+}
+
+private async Task<List<IncidentRelatedDto>> GetRelatedIncidentsInternalAsync(DaviWikiDbContext db, Guid incidentId, int take)
+{
+    var source = await db.Incidents.FirstOrDefaultAsync(i => i.Id == incidentId);
+    if (source == null) return new();
+
+    var keywords = ExtractKeywords($"{source.Title} {source.Description}");
+
+    // Nota de escala: trae todas las incidencias a memoria, igual que ya
+    // hace RelatedArticlesService con los artículos. Con decenas/cientos de
+    // registros es rápido; si el volumen crece mucho, conviene mover esta
+    // comparación a una consulta indexada en SQL en vez de LINQ-to-Objects.
+    var candidates = await db.Incidents.Where(i => i.Id != incidentId).ToListAsync();
+    var areas = await db.Areas.ToListAsync();
+
+    var results = new List<IncidentRelatedDto>();
+
+    foreach (var c in candidates)
     {
-        if (initialResponsibleUserId.Value == createdByUserId)
-        {
-            creatorParticipant.Role = IncidentParticipantRole.Responsable;
-        }
-        else
-        {
-            var existingRespPart = db.IncidentParticipants.Local
-                .FirstOrDefault(p => p.IncidentId == incident.Id && p.SecurityUserId == initialResponsibleUserId.Value);
+        var reasons = new List<string>();
+        var score = 0;
 
-            if (existingRespPart == null)
-            {
-                db.IncidentParticipants.Add(new IncidentParticipant
-                {
-                    Id = Guid.NewGuid(), 
-                    IncidentId = incident.Id, 
-                    SecurityUserId = initialResponsibleUserId.Value,
-                    AreaId = areaId, 
-                    Role = IncidentParticipantRole.Responsable, 
-                    AssignedAt = now
-                });
-            }
-            else
-            {
-                existingRespPart.Role = IncidentParticipantRole.Responsable;
-            }
+        var candidateKeywords = ExtractKeywords($"{c.Title} {c.Description}");
+        var shared = keywords.Intersect(candidateKeywords, StringComparer.OrdinalIgnoreCase).ToList();
+        if (shared.Count > 0)
+        {
+            score += shared.Count * 3;
+            reasons.Add($"Coincide en: {string.Join(", ", shared)}");
         }
 
-        responsibleAssigned = true;
-        await LogActivityAsync(db, incident.Id, IncidentActivityType.Asignada, createdByUserId,
-            $"{respUser.FullName} quedó como responsable al crearse.", now);
+        if (c.CurrentAreaId == source.CurrentAreaId)
+        {
+            score += 2;
+            reasons.Add("Misma área actual");
+        }
+
+        if (c.Priority == source.Priority) score += 1;
+
+        if (c.Status == IncidentStatus.Resuelta || c.Status == IncidentStatus.Cerrada)
+        {
+            score += 1;
+            reasons.Add("Ya tiene una resolución registrada");
+        }
+
+        if (score >= 3)
+        {
+            var area = areas.FirstOrDefault(a => a.Id == c.CurrentAreaId);
+            results.Add(new IncidentRelatedDto
+            {
+                Id = c.Id, Code = c.Code, Title = c.Title, Status = c.Status, Priority = c.Priority,
+                AreaName = area?.Name ?? "-", AreaColor = area?.Color ?? "#334155",
+                Score = score, Reasons = reasons, CreatedAt = c.CreatedAt, ClosedAt = c.ClosedAt
+            });
+        }
     }
+
+    return results.OrderByDescending(r => r.Score).ThenByDescending(r => r.CreatedAt).Take(take).ToList();
 }
 
-db.IncidentTimeSegments.Add(new IncidentTimeSegment
+private async Task<List<IncidentArticleSuggestionDto>> GetSuggestedArticlesInternalAsync(DaviWikiDbContext db, Guid incidentId, int take)
 {
-    Id = Guid.NewGuid(), IncidentId = incident.Id, AreaId = areaId,
-    UserId = responsibleAssigned ? initialResponsibleUserId : null,
-    StartedAt = now, IsActiveWork = responsibleAssigned
-});
+    var incident = await db.Incidents.FirstOrDefaultAsync(i => i.Id == incidentId);
+    if (incident == null) return new();
 
-await db.SaveChangesAsync();
+    var keywords = ExtractKeywords($"{incident.Title} {incident.Description}");
+    if (keywords.Count == 0) return new();
 
-var area = await db.Areas.FirstOrDefaultAsync(a => a.Id == areaId);
-if (respUser != null && responsibleAssigned && respUser.Id != createdByUserId)
-    NotifyResponsibleAssigned(incident.Id, incident.Code, incident.Title, area?.Name ?? "-",
-        respUser, createdByUserId, creator?.FullName ?? "-", NotificationType.IncidentAssigned);
+    var matchesBySlug = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
 
-return incident;
+    foreach (var keyword in keywords)
+    {
+        var found = await _searchDataService.SearchAsync(keyword, 50);
+        foreach (var result in found.Where(r => r.Type == "article"))
+        {
+            var slug = result.Url?.Split('/', StringSplitOptions.RemoveEmptyEntries).LastOrDefault()?.Split('?')[0];
+            if (string.IsNullOrWhiteSpace(slug)) continue;
+
+            if (!matchesBySlug.TryGetValue(slug, out var set))
+            {
+                set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                matchesBySlug[slug] = set;
+            }
+            set.Add(keyword);
+        }
+    }
+
+    if (matchesBySlug.Count == 0) return new();
+
+    var slugs = matchesBySlug.Keys.ToList();
+    var articles = await db.Articles.Where(a => slugs.Contains(a.Slug)).ToListAsync();
+    var linkedIds = await db.IncidentArticleLinks.Where(l => l.IncidentId == incidentId).Select(l => l.ArticleId).ToListAsync();
+
+    return articles
+        .Select(a => new IncidentArticleSuggestionDto
+        {
+            ArticleId = a.Id,
+            Title = a.Title,
+            Slug = a.Slug,
+            MatchedKeywords = matchesBySlug.TryGetValue(a.Slug, out var kws) ? kws.OrderBy(k => k).ToList() : new(),
+            AlreadyLinked = linkedIds.Contains(a.Id)
+        })
+        .OrderByDescending(s => s.MatchedKeywords.Count)
+        .Take(take)
+        .ToList();
+}
+
+private static List<string> ExtractKeywords(string text) =>
+    (text ?? string.Empty)
+        .Split(new[] { ' ', ',', '.', ':', '-', '_', '/', '(', ')', '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries)
+        .Where(w => w.Length >= 4)
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .Take(6)
+        .ToList();
+
+
+
+
+
+
+[SupplyParameterFromQuery(Name = "desde")] public Guid? FromIncidentId { get; set; }
+private Incident? _fromIncident;
+private IncidentRelatedDto? _fromExplanation;
+private bool _showFromBanner = true;
+private List<IncidentRelatedDto> _relatedIncidents = new();
+private List<IncidentArticleSuggestionDto> _suggestedArticles = new();
+
+
+
+
+
+_relatedIncidents = (await Incidents.GetRelatedIncidentsAsync(_detail.Id)).ToList();
+_suggestedArticles = (await Incidents.GetSuggestedArticlesAsync(_detail.Id)).ToList();
+
+if (FromIncidentId.HasValue && FromIncidentId.Value != _detail.Id)
+{
+    _fromIncident = await Incidents.GetIncidentByIdAsync(FromIncidentId.Value);
+    _fromExplanation = await Incidents.ExplainIncidentRelationAsync(FromIncidentId.Value, _detail.Id);
+}
+
+
+
+
+@if (_showFromBanner && _fromIncident is not null)
+{
+    <div class="card" style="padding:14px 18px; margin-bottom:var(--space-4); border-left:4px solid #0ea5e9; background:rgba(14,165,233,0.06); display:flex; gap:12px; align-items:flex-start;">
+        <Icon Name="link" />
+        <div style="flex:1;">
+            <p style="margin:0;">Llegaste aquí desde <a href="@($"/incidencias/{_fromIncident.Id}")"><strong>@_fromIncident.Code</strong> · @_fromIncident.Title</a></p>
+            @if (_fromExplanation is not null && _fromExplanation.Reasons.Count > 0)
+            {
+                <p style="margin:4px 0 0; font-size:0.85rem; color:var(--text-tertiary);">Por qué están relacionadas: @string.Join(" · ", _fromExplanation.Reasons)</p>
+            }
+        </div>
+        <button class="btn btn--ghost btn--sm" @onclick="() => _showFromBanner = false"><Icon Name="x" /></button>
+    </div>
+}
+
+
+
+
+
+@if (_relatedIncidents.Count > 0)
+{
+    <div class="card" style="padding: var(--space-6); margin-bottom: var(--space-5);">
+        <h4 class="widget__title"><Icon Name="git-branch" />Incidencias relacionadas</h4>
+        <p class="form-hint" style="margin-bottom:var(--space-3);">Por palabras clave, área o prioridad en común. Revisa las ya resueltas para ver cómo se solucionaron antes.</p>
+        @foreach (var r in _relatedIncidents)
+        {
+            <a href="@($"/incidencias/{r.Id}?desde={_detail!.Id}")" class="activity-row" style="text-decoration:none; color:inherit;">
+                <div class="activity-row__icon" style="background:@ColorUtils.ToRgba(r.AreaColor,0.14); color:@r.AreaColor;">
+                    <Icon Name="alert-triangle" />
+                </div>
+                <div style="flex:1; min-width:0;">
+                    <p class="activity-row__text"><strong>@r.Code</strong> · @r.Title <IncidentStatusBadge Status="r.Status" /></p>
+                    <p class="activity-row__time">@string.Join(" · ", r.Reasons)</p>
+                </div>
+            </a>
+        }
+    </div>
+}
+
+@if (_suggestedArticles.Count > 0)
+{
+    <div class="card" style="padding: var(--space-6); margin-bottom: var(--space-5);">
+        <h4 class="widget__title"><Icon Name="lightbulb" />Posibles soluciones</h4>
+        <p class="form-hint" style="margin-bottom:var(--space-3);">Artículos de la Wiki que mencionan los mismos términos que esta incidencia.</p>
+        @foreach (var s in _suggestedArticles)
+        {
+            <div class="activity-row">
+                <div class="activity-row__icon" style="background:rgba(234,179,8,0.14); color:#ca8a04;">
+                    <Icon Name="file-text" />
+                </div>
+                <div style="flex:1; min-width:0;">
+                    <p class="activity-row__text">
+                        <a href="@($"/articulos/{s.Slug}")"><strong>@s.Title</strong></a>
+                        @if (s.AlreadyLinked) { <span class="badge badge--outline">Ya vinculado</span> }
+                    </p>
+                    <p class="activity-row__time">Coincide en: @string.Join(", ", s.MatchedKeywords)</p>
+                </div>
+                @if (!s.AlreadyLinked)
+                {
+                    <button class="btn btn--secondary btn--sm" @onclick="() => LinkSuggestedArticle(s.ArticleId)">
+                        <Icon Name="link" /> Vincular
+                    </button>
+                }
+            </div>
+        }
+    </div>
+}
+
+
+
+
+
+
+private async Task LinkSuggestedArticle(Guid articleId)
+{
+    if (_detail is null) return;
+    await Incidents.LinkArticleAsync(_detail.Id, articleId, ActorId);
+    await LoadDetail();
+    Toast.Show("Artículo vinculado.", ToastVariant.Success, "link");
+}
