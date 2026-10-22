@@ -1,292 +1,41 @@
-CTL-OPT
-   OPTION(*NODEBUGIO:*SRCSTMT:*NOUNREF)
-   DFTACTGRP(*NO) ACTGRP(*NEW) DATEDIT(*DMY) DATFMT(*ISO)
-   ALWNULL( *USRCTL )
-COPYRIGHT('© BANCO DAVIVIENDA HONDURAS S.A.| V1.0.0 20250819 | EXTTCPG01');
+PGM
+  DCL VAR(&GUID)  TYPE(*CHAR) LEN(100)
+  DCL VAR(&NUMD)  TYPE(*CHAR) LEN(1)   VALUE('4')
+  DCL VAR(&ENVC)  TYPE(*CHAR) LEN(1)   VALUE('N')
+  DCL VAR(&CANAL) TYPE(*CHAR) LEN(1)   VALUE('T')
+  DCL VAR(&RESP)  TYPE(*CHAR) LEN(15)
+  DCL VAR(&ERR)   TYPE(*CHAR) LEN(5)
+  DCL VAR(&MSG)   TYPE(*CHAR) LEN(100)
+  DCL VAR(&TXT)   TYPE(*CHAR) LEN(132)
 
-//* OPCIONES SQL (debe ser la primera sentencia SQL del fuente)
-EXEC SQL SET OPTION COMMIT = *NONE, NAMING = *SQL, CLOSQLCSR = *ENDMOD;
+  ADDLIBLE LIB(PORREGPGM)
+  MONMSG MSGID(CPF2103)
+  ADDLIBLE LIB(PORREGDTA)
+  MONMSG MSGID(CPF2103)
+  ADDLIBLE LIB(BCAH96DTA)
+  MONMSG MSGID(CPF2103)
+  ADDLIBLE LIB(BCAH96)
+  MONMSG MSGID(CPF2103)
+  ADDLIBLE LIB(BNKPRD01)
+  MONMSG MSGID(CPF2103)
+  ADDLIBLE LIB(ICBSUSER)
+  MONMSG MSGID(CPF2103)
 
-//*---
-//* INCLUDES
-//*---
-/COPY BCAH96/QRPGLESRC,COPYRIGHT
-/COPY QSYSINC/QRPGLESRC,QUSEC
-/COPY QSYSINC/QRPGLESRC,QSYRUSRI
+  /* CASO 1: FEMISION en yyyymmdd */
+  CHGVAR VAR(&GUID) VALUE('00013691121021214165')
+  CALLSUBR SUBR(RUN)
 
-//*---
-//* DECLARACION DE ARCHIVOS
-//*---
-//* ARCHIVO DE PANTALLAS (el subfile es SFDATOS; INDDS por el INDARA del DDS)
-DCL-F FMTUNITMID WORKSTN USAGE(*INPUT:*OUTPUT)
-      SFILE(SFDATOS:NRR) INDDS(VNDINDIC);
+  /* CASO 2: FEMISION en ddmmyyyy */
+  CHGVAR VAR(&GUID) VALUE('5FDA45B1-CDF7-4FFE-A43E-E53BC2BEF285')
+  CALLSUBR SUBR(RUN)
 
-//*---
-//* VARIABLES GLOBALES
-//*---
-DCL-S NRR ZONED(5:0) INZ(0);
-DCL-S gTotal INT(10) INZ(0);
-//* Filtros aplicados en la ultima carga del subfile
-DCL-S gFiltroIde LIKE(BUSIDE);
-DCL-S gFiltroNom LIKE(BUSNOM);
-
-//* ESTRUCTURA PARA INDICADORES DE PANTALLA (99 posiciones por el INDDS)
-DCL-DS VNDINDIC LEN(99) QUALIFIED;
-       Salir        ind pos(3);
-       Renovar      ind pos(5);
-       Crear        ind pos(6);
-       Impresion    ind pos(7);
-       Regresar     ind pos(12);
-       SflEnd       ind pos(36);
-       SflDspCtl    ind pos(80);
-       SflDsp       ind pos(81);
-       SflClr       ind pos(82);
-END-DS;
-
-//*---
-//* CONSTANTES
-//*---
-//* Cantidad maxima de filas del subfile (igual a SFLSIZ y al FETCH FIRST)
-DCL-C MAX_FILAS CONST(1000);
-
-//*---
-//* PROGRAMAS EXTERNOS
-//*---
-//* TRAE EL NOMBRE DEL BANCO
-DCL-PR BCONAMEPGM EXTPGM('BCAH96/BCONAMEPGM');
-  *N CHAR(40);
-END-PR;
-
-//*---
-//* PROGRAM STATUS
-//*---
-DCL-DS PGM_STATUS PSDS ;
-   PROGRAM      CHAR(10) POS(01) ;
-  //USER        CHAR(10) POS(254) ;
-END-DS;
-
-//*---
-//* MAINLINE
-//*---
-PRINICIALIZA();
-PRFLUJO();
-
-*INLR = *ON;
-RETURN;
-
-//*---
-//* PROCEDURES & SUBROUTINES
-//*---
-
-//* DATOS DE CABECERA (PROGRAMA Y BANCO)
-DCL-PROC PRINICIALIZA;
-  DCL-PI *N;
-  END-PI;
-  DCL-S BCONAME CHAR(40) INZ('');
-  CALLP BCONAMEPGM(BCONAME);
-  NOMBCO = BCONAME;
-  NOMPGM = PROGRAM;
-END-PROC;
-
-//* FLUJO PRINCIPAL: repite la pantalla de consulta hasta que se pulse F3.
-//* Las ventanas (detalle, crear, eliminar) se abren desde la consulta.
-DCL-PROC PRFLUJO;
-  DCL-PI *N;
-  END-PI;
-  DCL-S fin IND INZ(*OFF);
-  DOW NOT fin;
-    fin = PRPANCONSULTA();
-  ENDDO;
-END-PROC;
-
-//* PANTALLA PRINCIPAL (SFCONTROL + SFDATOS). Devuelve *ON si se pulso F3.
-DCL-PROC PRPANCONSULTA;
-  DCL-PI *N IND;
-  END-PI;
-
-  BUSIDE = 0;
-  BUSNOM = *BLANKS;
-  PRCARGAR();
-
-  DOW *ON;
-    IF gTotal > 0;
-      NRR = 1;
-    ENDIF;
-    WRITE COMANDOS;
-    EXFMT SFCONTROL;
-    MSGERR = *BLANKS;
-
-    SELECT;
-      WHEN VNDINDIC.Salir;
-        RETURN *ON;
-      WHEN VNDINDIC.Renovar;
-        BUSIDE = 0;
-        BUSNOM = *BLANKS;
-        PRCARGAR();
-      WHEN VNDINDIC.Crear;
-        MSGERR = 'Crear: se implementa en el paso 3';
-      WHEN VNDINDIC.Impresion;
-        MSGERR = 'La impresion no esta disponible';
-      WHEN BUSIDE <> gFiltroIde OR BUSNOM <> gFiltroNom;
-        PRCARGAR();
-      OTHER;
-        PRPROCESAROPC();
-    ENDSL;
-  ENDDO;
-END-PROC;
-
-//* CARGA EL SUBFILE CON UN CURSOR SQL SEGUN LOS FILTROS DE PANTALLA
-DCL-PROC PRCARGAR;
-  DCL-PI *N;
-  END-PI;
-  //* Variables anfitrionas (los campos de pantalla no sirven: SQL0312)
-  DCL-S wBusIde  PACKED(13:0);
-  DCL-S wBusNom  VARCHAR(30);
-  DCL-S wPatron  VARCHAR(32);
-  DCL-S wSqlCode INT(10);
-  DCL-S hIdent   PACKED(13:0);
-  DCL-S hPriApe  CHAR(40);
-  DCL-S hPriNom  CHAR(40);
-
-  gFiltroIde = BUSIDE;
-  gFiltroNom = BUSNOM;
-  wBusIde = BUSIDE;
-  wBusNom = %TRIM(BUSNOM);
-  wPatron = '%' + wBusNom + '%';
-
-  //* Limpia el subfile
-  VNDINDIC.SflDspCtl = *OFF;
-  VNDINDIC.SflDsp    = *OFF;
-  VNDINDIC.SflClr    = *ON;
-  WRITE SFCONTROL;
-  VNDINDIC.SflClr    = *OFF;
-
-  gTotal = 0;
-  MSGERR = *BLANKS;
-
-  //* El FETCH FIRST debe coincidir con MAX_FILAS
-  EXEC SQL
-    DECLARE CSRIDEN CURSOR FOR
-      SELECT RIDENTIDA, RPRIAPELL, RPRINOMBR
-        FROM BCAH96DTA.REUNITIDEN
-       WHERE (:wBusIde = 0 OR RIDENTIDA = :wBusIde)
-         AND (:wBusNom = '' OR UPPER(RPRINOMBR) LIKE UPPER(:wPatron))
-       ORDER BY RPRIAPELL, RPRINOMBR, RIDENTIDA
-       FETCH FIRST 1000 ROWS ONLY;
-
-  EXEC SQL OPEN CSRIDEN;
-  wSqlCode = SQLCODE;
-
-  IF wSqlCode = 0;
-    DOW gTotal < MAX_FILAS;
-      EXEC SQL FETCH CSRIDEN INTO :hIdent, :hPriApe, :hPriNom;
-      wSqlCode = SQLCODE;
-      IF wSqlCode <> 0;
-        LEAVE;
-      ENDIF;
-      gTotal += 1;
-      NRR = gTotal;
-      OPC = *BLANKS;
-      RIDENTIDA = hIdent;
-      RPRIAPELL = hPriApe;
-      RPRINOMBR = hPriNom;
-      WRITE SFDATOS;
-    ENDDO;
-    EXEC SQL CLOSE CSRIDEN;
-  ENDIF;
-
-  SELECT;
-    WHEN wSqlCode < 0;
-      MSGERR = 'Error SQL ' + %CHAR(wSqlCode) + ' al consultar';
-    WHEN gTotal = 0;
-      MSGERR = 'No se encontraron registros';
-    WHEN gTotal = MAX_FILAS;
-      MSGERR = 'Se muestran los primeros 1000 registros, refine la busqueda';
-  ENDSL;
-
-  VNDINDIC.SflDsp    = (gTotal > 0);
-  VNDINDIC.SflDspCtl = *ON;
-  VNDINDIC.SflEnd    = *ON;
-  IF gTotal > 0;
-    NRR = 1;
-  ENDIF;
-END-PROC;
-
-//* PROCESA LAS OPCIONES ESCRITAS EN EL SUBFILE (4=Eliminar, 5=Ver detalles)
-DCL-PROC PRPROCESAROPC;
-  DCL-PI *N;
-  END-PI;
-  DCL-S wMsg VARCHAR(76) INZ('');
-  DCL-S wRes VARCHAR(76);
-
-  IF gTotal = 0;
-    RETURN;
-  ENDIF;
-
-  READC SFDATOS;
-  DOW NOT %EOF(FMTUNITMID);
-    SELECT;
-      WHEN OPC = '5';
-        wRes = PRVISUALIZAR(RIDENTIDA);
-        IF wRes <> '';
-          wMsg = wRes;
-        ENDIF;
-      WHEN OPC = '4';
-        wMsg = 'Eliminar: se implementa en el paso 3';
-      OTHER;
-        wMsg = 'Opcion no valida, use 4 o 5';
-    ENDSL;
-    READC SFDATOS;
-  ENDDO;
-
-  //* Recarga para limpiar las opciones y reflejar cambios
-  PRCARGAR();
-  IF wMsg <> '';
-    MSGERR = wMsg;
-  ENDIF;
-END-PROC;
-
-//* VENTANA DE DETALLE (VISUALIZA). Devuelve un mensaje si hubo problema.
-DCL-PROC PRVISUALIZAR;
-  DCL-PI *N VARCHAR(76);
-    pIdent LIKE(RIDENTIDA) CONST;
-  END-PI;
-  //* Variables anfitrionas: AJUSTAR TIPOS SEGUN DSPFFD DE REUNITIDEN
-  DCL-S wSqlCode INT(10);
-  DCL-S hIdent   PACKED(13:0);
-  DCL-S hPriNom  CHAR(40);
-  DCL-S hSegNom  CHAR(40);
-  DCL-S hPriApe  CHAR(40);
-  DCL-S hSegApe  CHAR(40);
-  DCL-S hFechNac PACKED(8:0);
-  DCL-S hGenero  CHAR(1);
-
-  hIdent = pIdent;
-
-  EXEC SQL
-    SELECT RPRINOMBR, RSEGNOMBR, RPRIAPELL, RSEGAPELL, RFECHNAC, RGENERO
-      INTO :hPriNom, :hSegNom, :hPriApe, :hSegApe, :hFechNac, :hGenero
-      FROM BCAH96DTA.REUNITIDEN
-     WHERE RIDENTIDA = :hIdent
-     FETCH FIRST 1 ROW ONLY;
-  wSqlCode = SQLCODE;
-
-  SELECT;
-    WHEN wSqlCode = 100;
-      RETURN 'El registro ya no existe';
-    WHEN wSqlCode < 0;
-      RETURN 'Error SQL ' + %CHAR(wSqlCode) + ' al leer el detalle';
-  ENDSL;
-
-  RIDENTIDA = hIdent;
-  RPRINOMBR = hPriNom;
-  RSEGNOMBR = hSegNom;
-  RPRIAPELL = hPriApe;
-  RSEGAPELL = hSegApe;
-  RFECHNAC  = hFechNac;
-  RGENERO   = hGenero;
-
-  //* F3 o Intro solo cierran la ventana
-  EXFMT VISUALIZA;
-  RETURN '';
-END-PROC;
+  SUBR SUBR(RUN)
+    CHGVAR VAR(&RESP) VALUE(' ')
+    CHGVAR VAR(&ERR)  VALUE(' ')
+    CHGVAR VAR(&MSG)  VALUE(' ')
+    CALL PGM(DAB11INICL) PARM(&GUID &NUMD &ENVC &CANAL +
+         &RESP &ERR &MSG)
+    CHGVAR VAR(&TXT) VALUE('ERR=' *CAT &ERR *CAT ' MSG=' *CAT &MSG)
+    SNDPGMMSG MSG(&TXT) TOPGMQ(*EXT)
+  ENDSUBR
+ENDPGM
