@@ -1,41 +1,204 @@
-PGM
-  DCL VAR(&GUID)  TYPE(*CHAR) LEN(100)
-  DCL VAR(&NUMD)  TYPE(*CHAR) LEN(1)   VALUE('4')
-  DCL VAR(&ENVC)  TYPE(*CHAR) LEN(1)   VALUE('N')
-  DCL VAR(&CANAL) TYPE(*CHAR) LEN(1)   VALUE('T')
-  DCL VAR(&RESP)  TYPE(*CHAR) LEN(15)
-  DCL VAR(&ERR)   TYPE(*CHAR) LEN(5)
-  DCL VAR(&MSG)   TYPE(*CHAR) LEN(100)
-  DCL VAR(&TXT)   TYPE(*CHAR) LEN(132)
+//* VALIDA LOS DATOS DE LA VENTANA INSERTAR. Devuelve '' si todo esta bien.
+DCL-PROC PRVALIDAALTA;
+  DCL-PI *N VARCHAR(76);
+  END-PI;
+  DCL-S wId    VARCHAR(30);
+  DCL-S wFec   VARCHAR(30);
+  DCL-S wFec8  CHAR(8);
+  DCL-S wFecha DATE;
 
-  ADDLIBLE LIB(PORREGPGM)
-  MONMSG MSGID(CPF2103)
-  ADDLIBLE LIB(PORREGDTA)
-  MONMSG MSGID(CPF2103)
-  ADDLIBLE LIB(BCAH96DTA)
-  MONMSG MSGID(CPF2103)
-  ADDLIBLE LIB(BCAH96)
-  MONMSG MSGID(CPF2103)
-  ADDLIBLE LIB(BNKPRD01)
-  MONMSG MSGID(CPF2103)
-  ADDLIBLE LIB(ICBSUSER)
-  MONMSG MSGID(CPF2103)
+  wId = %TRIM(%CHAR(RIDENTIDA));
+  IF wId = '' OR wId = '0';
+    RETURN 'Digite la identidad';
+  ENDIF;
+  IF %CHECK('0123456789' : wId) > 0;
+    RETURN 'La identidad solo debe contener numeros';
+  ENDIF;
+  IF RPRINOMBR = *BLANKS;
+    RETURN 'El 1er nombre es obligatorio';
+  ENDIF;
+  IF RPRIAPELL = *BLANKS;
+    RETURN 'El 1er apellido es obligatorio';
+  ENDIF;
+  IF RGENERO <> 'F' AND RGENERO <> 'M';
+    RETURN 'Genero: digite F o M';
+  ENDIF;
 
-  /* CASO 1: FEMISION en yyyymmdd */
-  CHGVAR VAR(&GUID) VALUE('00013691121021214165')
-  CALLSUBR SUBR(RUN)
+  //* Fecha en formato DDMMAAAA (se rellena con ceros a la izquierda)
+  wFec = %TRIM(%CHAR(RFECHNAC));
+  IF %LEN(wFec) > 8 OR %CHECK('0123456789' : wFec) > 0;
+    RETURN 'Fecha invalida, use DDMMAAAA';
+  ENDIF;
+  wFec8 = %SUBST('00000000' + wFec : %LEN(wFec) + 1);
+  MONITOR;
+    wFecha = %DATE(wFec8 : *EUR0);
+  ON-ERROR;
+    RETURN 'Fecha invalida, use DDMMAAAA';
+  ENDMON;
+  IF wFecha > %DATE() OR wFecha < D'1900-01-01';
+    RETURN 'La fecha de nacimiento no es valida';
+  ENDIF;
 
-  /* CASO 2: FEMISION en ddmmyyyy */
-  CHGVAR VAR(&GUID) VALUE('5FDA45B1-CDF7-4FFE-A43E-E53BC2BEF285')
-  CALLSUBR SUBR(RUN)
+  RETURN '';
+END-PROC;
 
-  SUBR SUBR(RUN)
-    CHGVAR VAR(&RESP) VALUE(' ')
-    CHGVAR VAR(&ERR)  VALUE(' ')
-    CHGVAR VAR(&MSG)  VALUE(' ')
-    CALL PGM(DAB11INICL) PARM(&GUID &NUMD &ENVC &CANAL +
-         &RESP &ERR &MSG)
-    CHGVAR VAR(&TXT) VALUE('ERR=' *CAT &ERR *CAT ' MSG=' *CAT &MSG)
-    SNDPGMMSG MSG(&TXT) TOPGMQ(*EXT)
-  ENDSUBR
-ENDPGM
+//* VENTANA INSERTAR: valida, revisa duplicado e inserta con SQL
+DCL-PROC PRINSERTAR;
+  DCL-PI *N VARCHAR(76);
+  END-PI;
+  DCL-S wSqlCode INT(10);
+  DCL-S wCant    INT(10);
+  DCL-S wMsg     VARCHAR(76);
+  DCL-S hIdent   LIKE(dsPer.RIDENTIDA);
+  DCL-S hPriNom  LIKE(dsPer.RPRINOMBR);
+  DCL-S hSegNom  LIKE(dsPer.RSEGNOMBR);
+  DCL-S hPriApe  LIKE(dsPer.RPRIAPELL);
+  DCL-S hSegApe  LIKE(dsPer.RSEGAPELL);
+  DCL-S hFechNac LIKE(dsPer.RFECHNAC);
+  DCL-S hGenero  LIKE(dsPer.RGENERO);
+
+  CLEAR RIDENTIDA;
+  CLEAR RPRINOMBR;
+  CLEAR RSEGNOMBR;
+  CLEAR RPRIAPELL;
+  CLEAR RSEGAPELL;
+  CLEAR RFECHNAC;
+  CLEAR RGENERO;
+  MSGERR = *BLANKS;
+
+  DOW *ON;
+    EXFMT INSERTAR;
+    MSGERR = *BLANKS;
+
+    //* F3 cierra la ventana sin guardar
+    IF VNDINDIC.Salir;
+      RETURN '';
+    ENDIF;
+
+    //* Nombres y genero en mayusculas
+    RPRINOMBR = %XLATE(MINUS : MAYUS : RPRINOMBR);
+    RSEGNOMBR = %XLATE(MINUS : MAYUS : RSEGNOMBR);
+    RPRIAPELL = %XLATE(MINUS : MAYUS : RPRIAPELL);
+    RSEGAPELL = %XLATE(MINUS : MAYUS : RSEGAPELL);
+    RGENERO   = %XLATE(MINUS : MAYUS : RGENERO);
+
+    wMsg = PRVALIDAALTA();
+    IF wMsg <> '';
+      MSGERR = wMsg;
+      ITER;
+    ENDIF;
+
+    hIdent   = RIDENTIDA;
+    hPriNom  = RPRINOMBR;
+    hSegNom  = RSEGNOMBR;
+    hPriApe  = RPRIAPELL;
+    hSegApe  = RSEGAPELL;
+    hFechNac = RFECHNAC;
+    hGenero  = RGENERO;
+
+    //* Evita duplicados
+    EXEC SQL
+      SELECT COUNT(*) INTO :wCant
+        FROM BCAH96DTA.REUNITIDEN
+       WHERE RIDENTIDA = :hIdent;
+    wSqlCode = SQLCODE;
+    IF wSqlCode < 0;
+      MSGERR = 'Error SQL ' + %CHAR(wSqlCode) + ' al validar';
+      ITER;
+    ENDIF;
+    IF wCant > 0;
+      MSGERR = 'Ya existe un registro con esa identidad';
+      ITER;
+    ENDIF;
+
+    EXEC SQL
+      INSERT INTO BCAH96DTA.REUNITIDEN
+             (RIDENTIDA, RPRINOMBR, RSEGNOMBR, RPRIAPELL,
+              RSEGAPELL, RFECHNAC, RGENERO)
+      VALUES (:hIdent, :hPriNom, :hSegNom, :hPriApe,
+              :hSegApe, :hFechNac, :hGenero);
+    wSqlCode = SQLCODE;
+    IF wSqlCode <> 0;
+      MSGERR = 'Error SQL ' + %CHAR(wSqlCode) + ' al insertar';
+      ITER;
+    ENDIF;
+
+    RETURN 'Registro creado correctamente';
+  ENDDO;
+
+  RETURN '';
+END-PROC;
+
+//* VENTANA ELIMINAR: muestra el registro y borra con SQL si se escribe SI
+DCL-PROC PRELIMINAR;
+  DCL-PI *N VARCHAR(76);
+    pIdent LIKE(RIDENTIDA) CONST;
+  END-PI;
+  DCL-S wSqlCode INT(10);
+  DCL-S hIdent   LIKE(dsPer.RIDENTIDA);
+  DCL-S hPriNom  LIKE(dsPer.RPRINOMBR);
+  DCL-S hSegNom  LIKE(dsPer.RSEGNOMBR);
+  DCL-S hPriApe  LIKE(dsPer.RPRIAPELL);
+  DCL-S hSegApe  LIKE(dsPer.RSEGAPELL);
+  DCL-S hFechNac LIKE(dsPer.RFECHNAC);
+  DCL-S hGenero  LIKE(dsPer.RGENERO);
+
+  hIdent = pIdent;
+
+  EXEC SQL
+    SELECT RPRINOMBR, RSEGNOMBR, RPRIAPELL, RSEGAPELL, RFECHNAC, RGENERO
+      INTO :hPriNom, :hSegNom, :hPriApe, :hSegApe, :hFechNac, :hGenero
+      FROM BCAH96DTA.REUNITIDEN
+     WHERE RIDENTIDA = :hIdent
+     FETCH FIRST 1 ROW ONLY;
+  wSqlCode = SQLCODE;
+
+  SELECT;
+    WHEN wSqlCode = 100;
+      RETURN 'El registro ya no existe';
+    WHEN wSqlCode < 0;
+      RETURN 'Error SQL ' + %CHAR(wSqlCode) + ' al leer el registro';
+  ENDSL;
+
+  RIDENTIDA = hIdent;
+  RPRINOMBR = hPriNom;
+  RSEGNOMBR = hSegNom;
+  RPRIAPELL = hPriApe;
+  RSEGAPELL = hSegApe;
+  RFECHNAC  = hFechNac;
+  RGENERO   = hGenero;
+  CONFIRM   = *BLANKS;
+  MSGERR    = *BLANKS;
+
+  DOW *ON;
+    EXFMT ELIMINAR;
+    MSGERR = *BLANKS;
+
+    //* F3 cancela
+    IF VNDINDIC.Salir;
+      RETURN 'Eliminacion cancelada';
+    ENDIF;
+
+    IF %XLATE(MINUS : MAYUS : CONFIRM) <> 'SI';
+      MSGERR = 'Escriba SI para eliminar o F3 para cancelar';
+      ITER;
+    ENDIF;
+
+    EXEC SQL
+      DELETE FROM BCAH96DTA.REUNITIDEN
+       WHERE RIDENTIDA = :hIdent;
+    wSqlCode = SQLCODE;
+
+    SELECT;
+      WHEN wSqlCode = 100;
+        RETURN 'El registro ya no existe';
+      WHEN wSqlCode < 0;
+        MSGERR = 'Error SQL ' + %CHAR(wSqlCode) + ' al eliminar';
+        ITER;
+    ENDSL;
+
+    RETURN 'Registro eliminado correctamente';
+  ENDDO;
+
+  RETURN '';
+END-PROC;
