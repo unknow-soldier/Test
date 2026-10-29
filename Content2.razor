@@ -1,17 +1,5 @@
--- 1) ¿Se cumple "últimos 10 de la tarjeta = últimos 10 de CUX1AC" en todas las TC?
-select c.CUX1AP, c.CUX1AC, c.CUX1CS, t.SJ0NU2, t.SJ0NU3,
-       case when trim(t.SJ0NU2) = trim(c.CUX1CS) then 'OK' else 'DIF' end chk
-  from bnkprd01.cup00901 c
-  join evertecdta.sj0tra t
-    on right(trim(t.SJ0NUM),10) = right(digits(c.CUX1AC),10)
- where c.CUXBK = 1 and c.CUX1AP in (85,89,90)
- fetch first 30 rows only
-
-
-
--- 2) ¿SJ0NU3 agrupa tarjetas de un mismo cliente o se reparte entre clientes?
-select SJ0NU3, count(*) tarjetas, count(distinct SJ0NU2) clientes
-  from evertecdta.sj0tra
- group by SJ0NU3
- order by 2 desc
- fetch first 20 rows only
+select table_name, column_name, length
+  from qsys2.syscolumns
+ where table_schema = 'EVERTECDTA'
+   and (column_name like '%CTA%' or column_name like '%ACC%' or column_name like '%CUE%')
+ order by 1
