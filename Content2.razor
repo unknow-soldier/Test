@@ -1,74 +1,62 @@
-D vHoy            S               D
-D vMeses          S             10I 0
-D vTxt            S              8A
+EXEC SQL SET OPTION COMMIT = *NONE, NAMING = *SQL;
 
 
------------------------------------------------------
-
- // REIMPRESION: la CNBS exige emision >= hoy
- vHoy = %date();
- if vFecEmi < vHoy;
-    vMeses     = %diff(vFecVen : vFecEmi : *MONTHS);  // plazo original
-    vFecEmi    = vHoy;
-    vFecVen    = vHoy + %months(vMeses);
-    $pFemision = %char(vFecEmi : *EUR0);              // ddmmyyyy
-    $pFvencimi = %char(vFecVen : *EUR0);
-    vTxt       = $pFemision;
-    $pFecha    = %subst(vTxt:1:2) + '-' + %subst(vTxt:3:2)
-                 + '-' + %subst(vTxt:5:4);            // dd-mm-yyyy
-    $pDia      = %subst(vTxt:1:2);
-    $pMes      = %subst(vTxt:3:2);
-    $pAno      = %subst(vTxt:5:4);
- endif;
-
-----------------------------------------------------------
-Opción 2: Se actualiza título y campo 
-----------------------------------------------------------
-D vReimp          S               N
-
- // REIMPRESION: la CNBS exige emision >= hoy
- vReimp = *off;
- vHoy = %date();
- if vFecEmi < vHoy;
-    vReimp     = *on;
-    vMeses     = %diff(vFecVen : vFecEmi : *MONTHS);  // plazo original
-    vFecEmi    = vHoy;
-    vFecVen    = vHoy + %months(vMeses);
-    $pFemision = %char(vFecEmi : *EUR0);              // ddmmyyyy
-    $pFvencimi = %char(vFecVen : *EUR0);
-    vTxt       = $pFemision;
-    $pFecha    = %subst(vTxt:1:2) + '-' + %subst(vTxt:3:2)
-                 + '-' + %subst(vTxt:5:4);            // dd-mm-yyyy
-    $pDia      = %subst(vTxt:1:2);
-    $pMes      = %subst(vTxt:3:2);
-    $pAno      = %subst(vTxt:5:4);
- endif;
+DCL-F <PANTALLA> WORKSTN INDDS(VNDINDIC);
 
 
- /Free
- // REIMPRESION: reflejar fechas nuevas en DAB01GLF solo si el POST fue exitoso
- if vReimp and $Error = 'false';
-    chain $pGuid DAB01GLF;                 // relee el registro vigente
-    if %found(DAB01GLF);
-       FEMISION = %char(vFecEmi : *ISO0);  // yyyymmdd
-       FVENCIO  = %char(vFecVen : *ISO0);
-       DABFEC   = $pFecha;                 // dd-mm-yyyy
-       DABDIA   = $pDia;
-       DABMES   = $pMes;
-       DAANIO   = $pAno;
-       update RDAB01;
-    endif;
- endif;
- /End-Free
+// PARAMETRO DE ENTRADA: NUMERO DE CUENTA
+DCL-PI *N;
+   pCuenta PACKED(16:0);
+END-PI;
 
 
---------------------------------------------------------------
-Opción 3: No se actualiza fecha en título
---------------------------------------------------------------
+// PROTOTIPOS INTERNOS
+DCL-PR PRINICIALIZA END-PR;
+DCL-PR CARGATARJETAS END-PR;
 
- // REIMPRESION (variante B): solo cambia la emision enviada;
- // vencimiento, pFecha, pDia/pMes/pAno y fechas del titulo no se tocan
- vHoy = %date();
- if vFecEmi < vHoy;
-    $pFemision = %char(vHoy : *EUR0);     // ddmmyyyy
- endif;
+
+PRINICIALIZA();
+NUMCTA = %CHAR(pCuenta);
+CARGATARJETAS();
+EXFMT VISUALIZA;
+*INLR = *ON;
+RETURN;
+
+
+//* CARGA LAS TARJETAS ASOCIADAS A LA CUENTA (MAX 6)
+DCL-PROC CARGATARJETAS;
+   DCL-S wTarjeta CHAR(20);
+   DCL-S wNulo    INT(5);
+   DCL-S wCont    INT(5) INZ(0);
+
+   EXEC SQL DECLARE C_TARJ CURSOR FOR
+      SELECT CHAR(SJ0XXX)
+        FROM EVERTECDTA.SJ0TRA
+       WHERE SJ0NUM = :pCuenta
+       ORDER BY 1
+       FOR READ ONLY;
+
+   EXEC SQL OPEN C_TARJ;
+   IF SQLCODE = 0;
+      EXEC SQL FETCH C_TARJ INTO :wTarjeta :wNulo;
+      DOW SQLCODE = 0 AND wCont < 6;
+         wCont += 1;
+         // OPCIONAL (enmascarar):
+         // wTarjeta = %SUBST(wTarjeta:1:6) + '******' + %SUBST(wTarjeta:13:4);
+         SELECT;
+            WHEN wCont = 1; WTAR1 = wTarjeta;
+            WHEN wCont = 2; WTAR2 = wTarjeta;
+            WHEN wCont = 3; WTAR3 = wTarjeta;
+            WHEN wCont = 4; WTAR4 = wTarjeta;
+            WHEN wCont = 5; WTAR5 = wTarjeta;
+            WHEN wCont = 6; WTAR6 = wTarjeta;
+         ENDSL;
+         EXEC SQL FETCH C_TARJ INTO :wTarjeta :wNulo;
+      ENDDO;
+      EXEC SQL CLOSE C_TARJ;
+   ENDIF;
+
+   IF wCont = 0;
+      WTAR1 = 'SIN TARJETAS ASOCIADAS';
+   ENDIF;
+END-PROC;
