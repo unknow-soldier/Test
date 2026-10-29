@@ -1,22 +1,13 @@
-select column_name, data_type, length, numeric_scale
-  from qsys2.syscolumns
- where table_schema = 'EVERTECDTA'
-   and table_name = 'SJ0TRA'
-   and column_name = 'SJ0NUM'
+select '[' || SJ0NUM || ']' as sj0num_raw,
+       length(trim(SJ0NUM)) as largo
+  from evertecdta.sj0tra
+ fetch first 15 rows only
 
 
-------------
-
-select distinct c.CUX1CS as cif, c.CUX1AP as aplic, c.CUX1AC as cuenta12,
-       t.SJ0NUM,
-       hex(cast(mod(c.CUX1AC, 10000000000) as decimal(16,0))) as parm_hex
-  from bnkprd01.cup00901 c
-  join evertecdta.sj0tra t
-    on trim(leading '0' from trim(t.SJ0NUM))
-     = trim(leading '0' from trim(char(mod(c.CUX1AC, 10000000000))))
- where c.CUXBK = 1
-   and c.CUX1AP = 20
- fetch first 10 rows only
 
 
---------------
+select CUXBK, CUX1AP, CUX1AC, CUX1CS
+  from bnkprd01.cup00901
+ where CUXBK = 1
+   and char(CUX1AC) like '%10480'
+ fetch first 20 rows only
