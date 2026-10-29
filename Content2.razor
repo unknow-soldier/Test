@@ -1,7 +1,14 @@
-     A                                      DSPSIZ(24 80 *DS3)
-     A                                      INDARA
+                                             DSPSIZ(24 80 *DS3)
+                                             INDARA
+      *--------------------------------------------------------------
+      * 1. Registro de Subfile (SFLREC)
+      *--------------------------------------------------------------
      A          R SFLREC                    SFL
      A            WTARJ         20A  O 10 26COLOR(WHT)
+     A                                      WINDOW(VISUALIZA)
+      *--------------------------------------------------------------
+      * 2. Registro de Control de Subfile (SFLCTL)
+      *--------------------------------------------------------------
      A          R VISUALIZA                 SFLCTL(SFLREC)
      A                                      SFLSIZ(0020)
      A                                      SFLPAG(0005)
@@ -11,6 +18,7 @@
      A  82                                  SFLDSP
      A  83                                  SFLDSPCTL
      A  84                                  SFLEND(*MORE)
+      * Elementos fijos y cabeceras dentro de la ventana
      A                                  3 27'Listado de Tarjetas'
      A                                      COLOR(YLW)
      A                                      DSPATR(HI)
@@ -19,6 +27,7 @@
      A                                  8 27'Listado de Tarjetas'
      A                                      COLOR(YLW)
      A                                      DSPATR(HI)
+      * Pie de página / Teclas de función
      A                                 19  4'F3=Salir'
      A                                      COLOR(BLU)
      A                                 19 47'Intro=Continuar'
