@@ -1,62 +1,9 @@
-EXEC SQL SET OPTION COMMIT = *NONE, NAMING = *SQL;
-
-
-DCL-F <PANTALLA> WORKSTN INDDS(VNDINDIC);
-
-
-// PARAMETRO DE ENTRADA: NUMERO DE CUENTA
-DCL-PI *N;
-   pCuenta PACKED(16:0);
-END-PI;
-
-
-// PROTOTIPOS INTERNOS
-DCL-PR PRINICIALIZA END-PR;
-DCL-PR CARGATARJETAS END-PR;
-
-
-PRINICIALIZA();
-NUMCTA = %CHAR(pCuenta);
-CARGATARJETAS();
-EXFMT VISUALIZA;
-*INLR = *ON;
-RETURN;
-
-
-//* CARGA LAS TARJETAS ASOCIADAS A LA CUENTA (MAX 6)
-DCL-PROC CARGATARJETAS;
-   DCL-S wTarjeta CHAR(20);
-   DCL-S wNulo    INT(5);
-   DCL-S wCont    INT(5) INZ(0);
-
-   EXEC SQL DECLARE C_TARJ CURSOR FOR
-      SELECT CHAR(SJ0XXX)
-        FROM EVERTECDTA.SJ0TRA
-       WHERE SJ0NUM = :pCuenta
-       ORDER BY 1
-       FOR READ ONLY;
-
-   EXEC SQL OPEN C_TARJ;
-   IF SQLCODE = 0;
-      EXEC SQL FETCH C_TARJ INTO :wTarjeta :wNulo;
-      DOW SQLCODE = 0 AND wCont < 6;
-         wCont += 1;
-         // OPCIONAL (enmascarar):
-         // wTarjeta = %SUBST(wTarjeta:1:6) + '******' + %SUBST(wTarjeta:13:4);
-         SELECT;
-            WHEN wCont = 1; WTAR1 = wTarjeta;
-            WHEN wCont = 2; WTAR2 = wTarjeta;
-            WHEN wCont = 3; WTAR3 = wTarjeta;
-            WHEN wCont = 4; WTAR4 = wTarjeta;
-            WHEN wCont = 5; WTAR5 = wTarjeta;
-            WHEN wCont = 6; WTAR6 = wTarjeta;
-         ENDSL;
-         EXEC SQL FETCH C_TARJ INTO :wTarjeta :wNulo;
-      ENDDO;
-      EXEC SQL CLOSE C_TARJ;
-   ENDIF;
-
-   IF wCont = 0;
-      WTAR1 = 'SIN TARJETAS ASOCIADAS';
-   ENDIF;
-END-PROC;
+select distinct c.CUX1CS as cif, c.CUX1AP as aplic, c.CUX1AC as cuenta12,
+       t.SJ0NUM,
+       hex(cast(mod(c.CUX1AC, 10000000000) as decimal(16,0))) as parm_hex
+  from bnkprd01.cup00901 c
+  join evertecdta.sj0tra t
+    on t.SJ0NUM = mod(c.CUX1AC, 10000000000)
+ where c.CUXBK = 1
+   and c.CUX1AP = 20
+ fetch first 10 rows only
