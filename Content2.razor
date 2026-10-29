@@ -1,14 +1,19 @@
       ***************************************************************
-      * Principio de datos - Archivo de Pantalla (Formato Subfile Window)
+      * Archivo de Pantalla: FMTCPRCLI2
       ***************************************************************
+                                             DSPSIZ(24 80 *DS3)
+                                             INDARA
+      *--------------------------------------------------------------
+      * 1. Registro de Subfile (SFLREC)
+      *--------------------------------------------------------------
      A          R SFLREC                    SFL
      A            WTARJ         20A  O 10 26COLOR(WHT)
-      *---------------------------------------------------------------
+      *--------------------------------------------------------------
+      * 2. Registro de Control de Subfile (SFLCTL)
+      *--------------------------------------------------------------
      A          R VISUALIZA                 SFLCTL(SFLREC)
      A                                      SFLSIZ(0020)
      A                                      SFLPAG(0005)
-     A                                      DSPSIZ(24 80 *DS3)
-     A                                      INDARA
      A                                      WINDOW(2 2 20 70)
      A                                      OVERLAY
      A                                      INDTXT(81, 'SFLCLR')
@@ -19,7 +24,7 @@
      A  82                                  SFLDSP
      A  83                                  SFLDSPCTL
      A  84                                  SFLEND(*MORE)
-      * Cabeceras y elementos fijos de la ventana
+      * Elementos fijos y cabeceras dentro de la ventana
      A                                  3 27'Listado de Tarjetas'
      A                                      COLOR(YLW)
      A                                      DSPATR(HI)
@@ -28,7 +33,7 @@
      A                                  8 27'Listado de Tarjetas'
      A                                      COLOR(YLW)
      A                                      DSPATR(HI)
-      * Teclas de función (F3 y Continuar)
+      * Pie de página / Teclas de función
      A                                 19  4'F3=Salir'
      A                                      COLOR(BLU)
      A                                 19 47'Intro=Continuar'
