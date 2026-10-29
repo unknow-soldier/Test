@@ -1,13 +1,10 @@
-select '[' || SJ0NUM || ']' as sj0num_raw,
-       length(trim(SJ0NUM)) as largo
-  from evertecdta.sj0tra
- fetch first 15 rows only
+select column_name, data_type, length, numeric_scale, column_text
+  from qsys2.syscolumns
+ where table_schema = 'EVERTECDTA'
+   and table_name = 'SJ0TRA'
+ order by ordinal_position
 
 
 
-
-select CUXBK, CUX1AP, CUX1AC, CUX1CS
-  from bnkprd01.cup00901
- where CUXBK = 1
-   and char(CUX1AC) like '%10480'
- fetch first 20 rows only
+select * from evertecdta.sj0tra
+ fetch first 5 rows only
