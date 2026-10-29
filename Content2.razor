@@ -1,10 +1,7 @@
-select column_name, data_type, length, numeric_scale, column_text
-  from qsys2.syscolumns
- where table_schema = 'EVERTECDTA'
-   and table_name = 'SJ0TRA'
- order by ordinal_position
-
-
-
-select * from evertecdta.sj0tra
- fetch first 5 rows only
+select t.SJ0NUM, t.SJ0NU2, t.SJ0NU3,
+       c.CUX1AP, c.CUX1AC, c.CUX1CS
+  from evertecdta.sj0tra t
+  join bnkprd01.cup00901 c
+    on c.CUXBK = 1
+   and trim(c.CUX1CS) = trim(t.SJ0NU2)
+ fetch first 20 rows only
