@@ -1,17 +1,6 @@
--- 1) Tablas cuyo texto menciona tarjeta o débito
-select table_name, table_text
-  from qsys2.systables
- where table_schema = 'EVERTECDTA'
-   and (upper(table_text) like '%TARJ%'
-     or upper(table_text) like '%DEBIT%'
-     or upper(table_text) like '%CUENTA%')
- order by 1
-
-
-
--- 2) Columnas con descripción de las candidatas
-select table_name, column_name, data_type, length, column_text
-  from qsys2.syscolumns
- where table_schema = 'EVERTECDTA'
-   and table_name in ('IBSRVF02','MAESTTARJD','TBLTARCASI')
- order by table_name, ordinal_position
+SELECT SJ0NUM, SJ0NU2, SJ0NU3, SJ0TIP, SJ0EST
+  FROM EVERTECDTA.SJ0TRA
+ WHERE TRIM(SJ0NU2) = (SELECT TRIM(SJ0NU2)
+                         FROM EVERTECDTA.SJ0TRA
+                        WHERE SJ0NUM = '<tarjeta de la cuenta TC>')
+ ORDER BY SJ0NU3
