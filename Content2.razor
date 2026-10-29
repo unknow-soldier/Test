@@ -1,24 +1,36 @@
-SELECT SJ0NUM, SJ0NU2, SJ0NU3, SJ0TIP, SJ0EST
-  FROM EVERTECDTA.SJ0TRA
- WHERE TRIM(SJ0NU2) = (SELECT TRIM(SJ0NU2)
-                         FROM EVERTECDTA.SJ0TRA
-                        WHERE SJ0NUM = '<tarjeta de la cuenta TC>')
- ORDER BY SJ0NU3
-
-
-
-
-SELECT CUX1AP, COUNT(*)
-  FROM BNKPRD01.CUP00901
- WHERE CUXBK = 1 AND TRIM(CUX1CS) = '<cif>'
-   AND CUX1AP IN (85,89,90)
- GROUP BY CUX1AP
-
-
-
-
-SELECT SJ0NU3, SJ0TIP, SJ0EST, COUNT(*)
-  FROM EVERTECDTA.SJ0TRA
- WHERE TRIM(SJ0NU2) = '<cif>'
- GROUP BY SJ0NU3, SJ0TIP, SJ0EST
- ORDER BY 1
+      ***************************************************************
+      * Principio de datos - Archivo de Pantalla (Formato Subfile Window)
+      ***************************************************************
+     A          R SFLREC                    SFL
+     A            WTARJ         20A  O 10 26COLOR(WHT)
+      *---------------------------------------------------------------
+     A          R VISUALIZA                 SFLCTL(SFLREC)
+     A                                      SFLSIZ(0020)
+     A                                      SFLPAG(0005)
+     A                                      DSPSIZ(24 80 *DS3)
+     A                                      INDARA
+     A                                      WINDOW(2 2 20 70)
+     A                                      OVERLAY
+     A                                      INDTXT(81, 'SFLCLR')
+     A                                      INDTXT(82, 'SFLDSP')
+     A                                      INDTXT(83, 'SFLDSPCTL')
+     A                                      INDTXT(84, 'SFLEND')
+     A  81                                  SFLCLR
+     A  82                                  SFLDSP
+     A  83                                  SFLDSPCTL
+     A  84                                  SFLEND(*MORE)
+      * Cabeceras y elementos fijos de la ventana
+     A                                  3 27'Listado de Tarjetas'
+     A                                      COLOR(YLW)
+     A                                      DSPATR(HI)
+     A                                  6 25'Número de Cuenta..:'
+     A            NUMCTA        20A  O  6 46COLOR(WHT)
+     A                                  8 27'Listado de Tarjetas'
+     A                                      COLOR(YLW)
+     A                                      DSPATR(HI)
+      * Teclas de función (F3 y Continuar)
+     A                                 19  4'F3=Salir'
+     A                                      COLOR(BLU)
+     A                                 19 47'Intro=Continuar'
+     A                                      COLOR(BLU)
+      ***************************************************************
