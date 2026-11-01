@@ -1,117 +1,18 @@
-PASO 1
-----------------
-//* CARGA LAS TARJETAS ASOCIADAS A LA CUENTA (SUBFILE)
-DCL-PROC CARGATARJETAS;
-    DCL-S wTarjeta    CHAR(20);
-    DCL-S wNulo       INT(5);
-    DCL-S wNumTarj    CHAR(16);
-    DCL-S wEsTC       IND;
-    // '0' = MISMO CLIENTE Y SJ0NU3 | '1' = TODAS LAS DEL CLIENTE
-    DCL-S wPorCliente CHAR(1) INZ('0');
-
-    EXEC SQL DECLARE C_TARJ CURSOR FOR
-        SELECT CHAR(t.SJ0NUM)
-          FROM EVERTECDTA.SJ0TRA t
-          JOIN EVERTECDTA.SJ0TRA b
-            ON TRIM(t.SJ0NU2) = TRIM(b.SJ0NU2)
-         WHERE b.SJ0NUM = :wNumTarj
-           AND TRIM(b.SJ0NU2) <> ''
-           AND (:wPorCliente = '1' OR t.SJ0NU3 = b.SJ0NU3)
-         ORDER BY CASE WHEN t.SJ0NUM = b.SJ0NUM THEN 0 ELSE 1 END,
-                  t.SJ0TIP DESC, t.SJ0NUM
-         FOR READ ONLY;
-
-    // 1. LIMPIAR EL SUBFILE
-    VNDINDIC.SflClr = *ON;
-    VNDINDIC.SflDsp = *OFF;
-    VNDINDIC.SflCtl = *OFF;
-    VNDINDIC.SflEnd = *OFF;
-    WRITE VISUALIZA;
-    VNDINDIC.SflClr = *OFF;
-    wRrn = 0;
-
-    // 2. CARGAR TARJETAS (SOLO CUENTAS DE TARJETA DE CREDITO)
-    wEsTC = (pAplic = 85 OR pAplic = 89 OR pAplic = 90);
-
-    IF wEsTC;
-        wNumTarj = %EDITC(pCuenta:'X');
-        EXEC SQL OPEN C_TARJ;
-        IF SQLCODE = 0;
-            EXEC SQL FETCH C_TARJ INTO :wTarjeta :wNulo;
-            DOW SQLCODE = 0 AND wRrn < 9999;
-                wRrn += 1;
-                IF wMascara;
-                    WTARJ = %SUBST(wTarjeta:1:6) + '******' +
-                            %SUBST(wTarjeta:13:4);
-                ELSE;
-                    WTARJ = wTarjeta;
-                ENDIF;
-                WRITE SFLREC;
-                EXEC SQL FETCH C_TARJ INTO :wTarjeta :wNulo;
-            ENDDO;
-            EXEC SQL CLOSE C_TARJ;
-        ENDIF;
-    ENDIF;
-
-    // 3. SIN TARJETAS: UNA LINEA CON EL MENSAJE
-    IF wRrn = 0;
-        wRrn = 1;
-        WTARJ = 'SIN TARJETAS ASOCIADAS';
-        WRITE SFLREC;
-    ENDIF;
-
-    // 4. MOSTRAR EL SUBFILE
-    VNDINDIC.SflDsp = *ON;
-    VNDINDIC.SflCtl = *ON;
-    VNDINDIC.SflEnd = *ON;
-END-PROC;
+     PGM                                                 
+                                                         
+     /* Declaración de variables con los tipos exactos */  
+     DCL        VAR(&CIF) TYPE(*CHAR) LEN(10) VALUE('0000000123') 
+     DCL        VAR(&APLIC) TYPE(*DEC) LEN(2 0) VALUE(85)        
+     DCL        VAR(&CUENTA) TYPE(*DEC) LEN(16 0) VALUE(1234567890123456)
+                                                         
+     /* Llamada al programa RPGLE pasándole los parámetros */
+     CALL       PGM(TU_BIBLIOTECA/TU_PROGRAMA) PARM(&CIF &APLIC &CUENTA)
+                                                         
+     ENDPGM                                              
 
 
+------------
 
-
-
-
-
-
-
-PASO 3
--------------
-NUMCTA = %CHAR(pCuenta);
-IF wMascara AND (pAplic = 85 OR pAplic = 89 OR pAplic = 90);
-    NUMCTA = %SUBST(NUMCTA:1:6) + '******' + %SUBST(NUMCTA:13:4);
-ENDIF;
-CARGATARJETAS();
-WRITE PIE;
-EXFMT VISUALIZA;
-
-
-
-
-
-
-
-PASO 4
---------------
-DCL-DS VNDINDIC QUALIFIED;
-    Salir     ind pos(3);
-    Renovar   ind pos(5);
-    Regresar  ind pos(12);
-    SflClr    ind pos(81);
-    SflDsp    ind pos(82);
-    SflCtl    ind pos(83);
-    SflEnd    ind pos(84);
-END-DS;
-
-// SUBFILE Y OPCIONES
-DCL-S wRrn     PACKED(4:0);
-// *ON = ENMASCARA LA TARJETA (PRIMEROS 6 Y ULTIMOS 4)
-DCL-S wMascara IND INZ(*OFF);
-
-
-
-
-
-
-PASO 5
---------------
-DCL-F FMTCPRCLI2 WORKSTN SFILE(SFLREC:wRrn) INDDS(VNDINDIC);
+SELECT SJ0NUM, SJ0NU2, SJ0NU3, SJ0TIP
+  FROM EVERTECDTA.SJ0TRA
+ WHERE SJ0NUM = 1234567890123456;
