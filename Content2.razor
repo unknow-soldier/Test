@@ -1,32 +1,6 @@
-     PGM                                                 
-                                                         
-     /* Declaración de variables con los tipos exactos */  
-     DCL        VAR(&CIF) TYPE(*CHAR) LEN(10) VALUE('0000000123') 
-     DCL        VAR(&APLIC) TYPE(*DEC) LEN(2 0) VALUE(85)        
-     DCL        VAR(&CUENTA) TYPE(*DEC) LEN(16 0) VALUE(1234567890123456)
-                                                         
-     /* Llamada al programa RPGLE pasándole los parámetros */
-     CALL       PGM(TU_BIBLIOTECA/TU_PROGRAMA) PARM(&CIF &APLIC &CUENTA)
-                                                         
-     ENDPGM                                              
-
-
-------------
-
-SELECT TRIM(CUX1CS) AS CIF, CUX1AP AS APLIC,
-       CUX1AC AS CUENTA, CUX1TY AS RELACION
-  FROM BNKPRD01.CUP00901
- WHERE CUXBK = 1
-   AND CUX1AC = 110008108750
-
-
-
-SELECT TRIM(c.CUX1CS) AS CIF, c.CUX1AP AS APLIC,
-       t.SJ0NUM AS CUENTA16, c.CUX1AC AS CUENTA12
-  FROM BNKPRD01.CUP00901 c
-  JOIN EVERTECDTA.SJ0TRA t
-    ON TRIM(t.SJ0NU2) = TRIM(c.CUX1CS)
-   AND SUBSTR(t.SJ0NUM, 7, 10) = SUBSTR(DIGITS(c.CUX1AC), 3, 10)
- WHERE c.CUXBK = 1
-   AND c.CUX1AP IN (85, 89, 90)
-   AND TRIM(c.CUX1CS) = '0001159706'
+SELECT t.SJ0NUM, TRIM(t.SJ0NU2) AS CIF, t.SJ0NU3, t.SJ0TIP, t.SJ0EST
+  FROM EVERTECDTA.SJ0TRA t
+  JOIN EVERTECDTA.SJ0TRA b
+    ON TRIM(t.SJ0NU2) = TRIM(b.SJ0NU2)
+   AND t.SJ0NU3 = b.SJ0NU3
+ WHERE b.SJ0NUM = '<tarjeta de la cuenta>'
