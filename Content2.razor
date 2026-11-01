@@ -1,7 +1,144 @@
-A          R PIE
-A                                      WINDOW(VISUALIZA)
-A                                      OVERLAY
-A                                 19  4'F3=Salir'
-A                                      COLOR(BLU)
-A                                 19 53'Enter=Continuar'
-A                                      COLOR(BLU)
+**FREE
+// =================================================================
+// Tarjetas asociadas a una cuenta - ventana con subfile
+// Pantalla   : FMTCPRCLI2 (formatos SFLREC, VISUALIZA, PIE)[span_3](start_span)[span_3](end_span)[span_4](start_span)[span_4](end_span)
+// Parametros (mismo orden que la llamada de GeneXus):
+//   pCif    CHAR(10)      <- &cif
+//   pAplic  PACKED(2:0)   <- &aplic
+//   pCuenta PACKED(16:0)  <- &cta16
+// Para cuentas de tarjeta de credito (aplic 85/89/90) muestra la
+// tarjeta de la cuenta y las que comparten con ella el mismo cliente
+// (SJ0NU2) y la misma identificacion de cuenta (SJ0NU3).
+// =================================================================
+CTL-OPT DFTACTGRP(*NO);
+
+// ---- Prototipos ----------------------------------------------------
+DCL-PR PRINICIALIZA END-PR;
+DCL-PR CARGATARJETAS END-PR;
+DCL-PR ES_TC IND END-PR;
+
+// ---- Pantalla ------------------------------------------------------
+DCL-S wRrn PACKED(4:0);
+
+DCL-DS wInd LEN(99);
+  inF3     IND POS(3);
+  inSflClr IND POS(81);
+  inSflDsp IND POS(82);
+  inSflCtl IND POS(83);
+  inSflEnd IND POS(84);
+END-DS;
+
+DCL-F FMTCPRCLI2 WORKSTN SFILE(SFLREC:wRrn) INDDS(wInd);[span_5](start_span)[span_5](end_span)[span_6](start_span)[span_6](end_span)
+
+// ---- Opciones ------------------------------------------------------
+// *ON = enmascara tarjeta (primeros 6 y ultimos 4 digitos).
+DCL-S wMascara IND INZ(*OFF);
+
+// ---- Parametros de entrada -----------------------------------------
+DCL-PI *N;
+  pCif    CHAR(10);
+  pAplic  PACKED(2:0);
+  pCuenta PACKED(16:0);
+END-PI;
+
+// ---- Programa principal --------------------------------------------
+PRINICIALIZA();
+
+NUMCTA = %CHAR(pCuenta);
+IF wMascara AND ES_TC();
+  NUMCTA = %SUBST(NUMCTA:1:6) + '******' + %SUBST(NUMCTA:13:4);
+ENDIF;
+
+CARGATARJETAS();
+
+WRITE PIE;         // Escribe el formato del pie de página en la ventana[span_7](start_span)[span_7](end_span)
+EXFMT VISUALIZA;   // Muestra el control de subfile y espera la respuesta (F3/Enter)[span_8](start_span)[span_8](end_span)[span_9](start_span)[span_9](end_span)
+
+*INLR = *ON;
+RETURN;
+
+// =================================================================
+// PRINICIALIZA
+// =================================================================
+DCL-PROC PRINICIALIZA;
+  DCL-PI *N END-PI;
+
+  NOMBCO = ' ';
+END-PROC;
+
+// =================================================================
+// ES_TC: la cuenta es de tarjeta de credito (aplic 85/89/90)
+// =================================================================
+DCL-PROC ES_TC;
+  DCL-PI *N IND END-PI;
+
+  RETURN (pAplic = 85 OR pAplic = 89 OR pAplic = 90);
+END-PROC;
+
+// =================================================================
+// CARGATARJETAS: llena el subfile SFLREC
+// =================================================================
+DCL-PROC CARGATARJETAS;
+  DCL-PI *N END-PI;
+
+  DCL-S wTarjeta    CHAR(20);
+  DCL-S wNulo       INT(5);
+  DCL-S wNumTarj    CHAR(16);
+  // '0' = tarjetas que comparten cliente y SJ0NU3 con la de la cuenta
+  // '1' = todas las tarjetas del cliente
+  DCL-S wPorCliente CHAR(1) INZ('0');
+
+  EXEC SQL DECLARE C_TARJ CURSOR FOR
+    SELECT CHAR(t.SJ0NUM)
+      FROM EVERTECDTA.SJ0TRA t
+      JOIN EVERTECDTA.SJ0TRA b
+        ON TRIM(t.SJ0NU2) = TRIM(b.SJ0NU2)
+     WHERE b.SJ0NUM = :wNumTarj
+       AND TRIM(b.SJ0NU2) <> ''
+       AND (:wPorCliente = '1' OR t.SJ0NU3 = b.SJ0NU3)
+     ORDER BY CASE WHEN t.SJ0NUM = b.SJ0NUM THEN 0 ELSE 1 END,
+              t.SJ0TIP DESC, t.SJ0NUM
+     FOR READ ONLY;
+
+  // 1. Limpiar el subfile
+  inSflClr = *ON;
+  inSflDsp = *OFF;
+  inSflCtl = *OFF;
+  inSflEnd = *OFF;
+  WRITE VISUALIZA;[span_10](start_span)[span_10](end_span)
+  inSflClr = *OFF;
+  wRrn = 0;
+
+  // 2. Cargar tarjetas (solo si la cuenta es de tarjeta de credito)
+  IF ES_TC();
+    wNumTarj = %EDITC(pCuenta:'X');
+
+    EXEC SQL OPEN C_TARJ;
+    IF SQLCODE = 0;
+      EXEC SQL FETCH C_TARJ INTO :wTarjeta :wNulo;
+      DOW SQLCODE = 0 AND wRrn < 9999;
+        wRrn += 1;
+        IF wMascara;
+          WTARJ = %SUBST(wTarjeta:1:6) + '******' + %SUBST(wTarjeta:13:4);
+        ELSE;
+          WTARJ = wTarjeta;
+        ENDIF;
+        WRITE SFLREC;[span_11](start_span)[span_11](end_span)
+        EXEC SQL FETCH C_TARJ INTO :wTarjeta :wNulo;
+      ENDDO;
+      EXEC SQL CLOSE C_TARJ;
+    ENDIF;
+  ENDIF;
+
+  // 3. Sin tarjetas: una sola linea con el mensaje
+  IF wRrn = 0;
+    wRrn = 1;
+    WTARJ = 'SIN TARJETAS ASOCIADAS';
+    WRITE SFLREC;[span_12](start_span)[span_12](end_span)
+  ENDIF;
+
+  // 4. Mostrar el subfile
+  inSflDsp = *ON;
+  inSflCtl = *ON;
+  inSflEnd = *ON;
+END-PROC;
