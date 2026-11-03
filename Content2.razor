@@ -1,6 +1,45 @@
-SELECT t.SJ0NUM, TRIM(t.SJ0NU2) AS CIF, t.SJ0NU3, t.SJ0TIP, t.SJ0EST
-  FROM EVERTECDTA.SJ0TRA t
-  JOIN EVERTECDTA.SJ0TRA b
-    ON TRIM(t.SJ0NU2) = TRIM(b.SJ0NU2)
-   AND t.SJ0NU3 = b.SJ0NU3
- WHERE b.SJ0NUM = '<tarjeta de la cuenta>'
+CRTPF FILE(BCAH96DTA/PRDIGJUZ) SRCFILE(BCAH96DTA/QDDSSRC) SRCMBR(PRDIGJUZ)
+CRTPF FILE(BCAH96DTA/PRDIGDEP) SRCFILE(BCAH96DTA/QDDSSRC) SRCMBR(PRDIGDEP)
+
+
+
+     A                                      UNIQUE
+     A          R RPRDIGJUZ                 TEXT('Juzgados')
+     A            JUZCOR         5P 0       COLHDG('Correlativo')
+     A            JUZDES        50A         COLHDG('Descripcion' +
+     A                                      'Juzgado')
+     A            JUZUCR        10A         COLHDG('Usuario' 'Creo')
+     A            JUZUMO        10A         COLHDG('Usuario' +
+     A                                      'Modifico')
+     A            JUZFCR         8S 0       COLHDG('Fecha' 'Creacion')
+     A            JUZFMO         8S 0       COLHDG('Fecha' +
+     A                                      'Modificacion')
+     A            JUZHCR         6S 0       COLHDG('Hora' 'Creacion')
+     A            JUZHMO         6S 0       COLHDG('Hora' +
+     A                                      'Modificacion')
+     A          K JUZCOR
+
+
+
+
+     A                                      UNIQUE
+     A          R RPRDIGDEP                 TEXT('Juzgados por +
+     A                                      Departamento')
+     A            DEPCOD         2P 0       COLHDG('Cod' 'Depto')
+     A            JUZCOR         5P 0       COLHDG('Correlativo' +
+     A                                      'Juzgado')
+     A            DEPDES        20A         COLHDG('Descripcion' +
+     A                                      'Depto')
+     A            JUZDES        50A         COLHDG('Descripcion' +
+     A                                      'Juzgado')
+     A            DEPUCR        10A         COLHDG('Usuario' 'Creo')
+     A            DEPUMO        10A         COLHDG('Usuario' +
+     A                                      'Modifico')
+     A            DEPFCR         8S 0       COLHDG('Fecha' 'Creacion')
+     A            DEPFMO         8S 0       COLHDG('Fecha' +
+     A                                      'Modificacion')
+     A            DEPHCR         6S 0       COLHDG('Hora' 'Creacion')
+     A            DEPHMO         6S 0       COLHDG('Hora' +
+     A                                      'Modificacion')
+     A          K DEPCOD
+     A          K JUZCOR
