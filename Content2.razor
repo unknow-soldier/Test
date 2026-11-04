@@ -1,78 +1,10 @@
-PRINICIALIZA();
+// Buscar SJ0COD y SJ0NU3 a partir del número de tarjeta recibido
+EXEC SQL
+  SELECT SJ0COD, SJ0NU3
+    INTO :wCod, :wNu3
+    FROM EVERTECDTA.SJ0TRA
+   WHERE SJ0NUM = :pCuenta
+   FETCH FIRST 1 ROW ONLY;
 
-// Descomponer pCuenta en SJ0COD (8 pos) y SJ0NU3 (5 pos)
-DCL-S wCtaStr CHAR(16);
-DCL-S wCod    CHAR(8);
-DCL-S wNu3    CHAR(5);
-
-wCtaStr = %TRIM(%EDITC(pCuenta: 'X'));
-wCod    = %SUBST(wCtaStr: %LEN(wCtaStr) - 12: 8);
-wNu3    = %SUBST(wCtaStr: %LEN(wCtaStr) - 4: 5);
-
-// Mostrar la combinación en la pantalla
+// Mostrar la combinación de la cuenta en la pantalla
 NUMCTA = wCod + wNu3;
-
-CARGATARJETAS();
-
-
-
-
-
-
-
-
-DCL-PROC CARGATARJETAS;
-  DCL-PI *N END-PI;
-
-  DCL-S wTarjeta    CHAR(20);
-  DCL-S wNulo       INT(5);
-  // '0' = mismo cliente y SJ0NU3 | '1' = todas del cliente
-  DCL-S wPorCliente CHAR(1) INZ('0');
-
-  EXEC SQL DECLARE C_TARJ CURSOR FOR
-    SELECT CHAR(t.SJ0NUM)
-      FROM EVERTECDTA.SJ0TRA t
-      JOIN EVERTECDTA.SJ0TRA b
-        ON TRIM(t.SJ0NU2) = TRIM(b.SJ0NU2)
-     WHERE TRIM(b.SJ0COD) = :wCod
-       AND b.SJ0NU3 = :wNu3
-       AND TRIM(b.SJ0NU2) <> ''
-       AND (:wPorCliente = '1' OR t.SJ0NU3 = b.SJ0NU3)
-     ORDER BY CASE WHEN t.SJ0NUM = b.SJ0NUM THEN 0 ELSE 1 END,
-              t.SJ0TIP DESC, t.SJ0NUM
-     FOR READ ONLY;
-
-  // 1. Limpiar el subfile
-  VNDINDIC.SflClr = *ON;
-  VNDINDIC.SflDsp = *OFF;
-  VNDINDIC.SflCtl = *OFF;
-  VNDINDIC.SflEnd = *OFF;
-  WRITE VISUALIZA;
-  VNDINDIC.SflClr = *OFF;
-  wRrn = 0;
-
-  // 2. Cargar tarjetas asociadas a la cuenta (SJ0COD + SJ0NU3)
-  EXEC SQL OPEN C_TARJ;
-  IF SQLCODE = 0;
-    EXEC SQL FETCH C_TARJ INTO :wTarjeta :wNulo;
-    DOW SQLCODE = 0 AND wRrn < 9999;
-      wRrn += 1;
-      WTARJ = wTarjeta;
-      WRITE SFLREC;
-      EXEC SQL FETCH C_TARJ INTO :wTarjeta :wNulo;
-    ENDDO;
-    EXEC SQL CLOSE C_TARJ;
-  ENDIF;
-
-  // 3. Sin tarjetas: una linea con el mensaje
-  IF wRrn = 0;
-    wRrn = 1;
-    WTARJ = 'SIN TARJETAS ASOCIADAS';
-    WRITE SFLREC;
-  ENDIF;
-
-  // 4. Mostrar el subfile
-  VNDINDIC.SflDsp = *ON;
-  VNDINDIC.SflCtl = *ON;
-  VNDINDIC.SflEnd = *ON;
-END-PROC;
