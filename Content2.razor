@@ -1,10 +1,109 @@
-// Buscar SJ0COD y SJ0NU3 a partir del número de tarjeta recibido
-EXEC SQL
-  SELECT SJ0COD, SJ0NU3
-    INTO :wCod, :wNu3
-    FROM EVERTECDTA.SJ0TRA
-   WHERE SJ0NUM = :pCuenta
-   FETCH FIRST 1 ROW ONLY;
+DABTRDIC
+---------------
+dcl-pr Entry extpgm('DABTRDIC') ;
+    TipCta   zoned(1:0);
+    ctadab   zoned(10:0);
+    canalIn  char(1)   options(*nopass);
+    pRespO   char(15)  options(*nopass);
+    ErrorO   char(5)   options(*nopass);
+    MensajeO char(100) options(*nopass);
+end-pr;
 
-// Mostrar la combinación de la cuenta en la pantalla
-NUMCTA = wCod + wNu3;
+dcl-pi Entry;
+    TipCta   zoned(1:0);
+    ctadab   zoned(10:0);
+    canalIn  char(1)   options(*nopass);
+    pRespO   char(15)  options(*nopass);
+    ErrorO   char(5)   options(*nopass);
+    MensajeO char(100) options(*nopass);
+end-pi;
+
+
+
+
+// Canal: por defecto 'T' (igual que antes). Solo cambia si lo envian.
+canalD = 'T';
+if %parms >= 3;
+   if canalIn = 'D' or canalIn = 'T';
+      canalD = canalIn;
+   endif;
+endif;
+// Resultado por defecto: cuenta no encontrada en ITTLC007
+if %parms >= 6;
+   pRespO   = 'P';
+   ErrorO   = 'true';
+   MensajeO = 'Cuenta no encontrada en ITTLC007';
+endif;
+
+
+
+
+
+// Resultado para quien llama (solo si envio los 4 parametros opcionales)
+if %parms >= 6;
+   ErrorO   = Error;
+   MensajeO = Mensaje;
+   if Error = 'false';
+      pRespO = 'S';
+   else;
+      pRespO = 'N';
+   endif;
+endif;
+
+
+DBVREPRO
+-------------
+   dcl-s tipoCtaTtl zoned(1:0) inz(1);   // todos los registros de TTLC001 tienen TTLCTIPCTA = 1 (verificado 2026-11-05)
+   dcl-s ctaNum     zoned(10:0);
+
+
+
+
+
+   dcl-pr DabTrDic extpgm('DABTRDIC');
+      pTipCta  zoned(1:0);
+      pCtaDab  zoned(10:0);
+      pCanal   char(1);
+      pRespO   char(15);
+      pErrorO  char(5);
+      pMsgO    char(100);
+   end-pr;
+
+
+
+
+
+  //extrae el guid
+  chain (ctachar) DAB01GDL2;
+  If %found(DAB01GDL2);
+       Guid    = DABGUI ;
+  Else ;
+       // Canal distinto de T/D: comportamiento original
+       If canal <> 'T' and canal <> 'D';
+            GTITUL  = 'P'    ;
+            RETURN  ;
+       Endif;
+
+       // Cliente existe en TTLC001 pero no en DAB01GLF:
+       // DABTRDIC lo inserta e imprime el titulo
+       monitor;
+          ctaNum = %dec(%trim(ctadab) : 10 : 0);
+       on-error;                    // cuenta no numerica
+          GTITUL = 'P';
+          *inlr  = *on;
+          return;
+       endmon;
+
+       pResp   = 'P';
+       Error   = 'true';
+       Mensaje = *blanks;
+       monitor;
+          DabTrDic(tipoCtaTtl : ctaNum : canal : pResp : Error : Mensaje);
+       on-error;                    // fallo al insertar o imprimir
+          pResp = 'N';
+       endmon;
+
+       GTITUL  = pResp ;            // S = generado, N = error, P = no existe
+       *inlr   = *on;
+       RETURN  ;
+  Endif;
