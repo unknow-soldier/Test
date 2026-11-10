@@ -1,228 +1,25 @@
-// PGUNITCNES v2 — Consulta de remesas UNITELLER en línea (fuente: BCAH96DTA.REUNITHIST)
-// Reconstruido a partir de las capturas del miembro RODOTEST/QRPGLESRC,PGUNITCNES.
-// NOTA: se omiten los bloques comentados/muertos (REUN01, REUN04, UTLRACTA, QCMDEXC,
-//       QSYRUSRI, SFL01, MENU BANET). Conservar tal cual las líneas 0001-0013 originales.
-// Marcas [CONFIRMAR] = dato por verificar con DSPFFD o con el negocio.
+  // Columnas nulas -> vacio/cero
+  IF nul.bPost  < 0; CLEAR RBENPOSTH;  ENDIF;
+  IF nul.bPhon  < 0; CLEAR RBENPHONH;  ENDIF;
+  IF nul.sPost  < 0; CLEAR RSNDPOSTH;  ENDIF;
+  IF nul.sPhon  < 0; CLEAR RSNDPHONH;  ENDIF;
+  IF nul.est    < 0; CLEAR RESTATREMH; ENDIF;
+  IF nul.orgAmt < 0; CLEAR RORGAMTH;   ENDIF;
+  IF nul.payAmt < 0; CLEAR RPAYAMTH;   ENDIF;
+  IF nul.exch   < 0; CLEAR REXCHRATH;  ENDIF;
+  IF nul.fec    < 0; CLEAR RDATRECIH;  ENDIF;
+  IF nul.canal  < 0; CLEAR RCANALPAGH; ENDIF;
 
-//*----------------------------------------------------------------
-//* CONFIGURACIONES Y COPYRIGHT
-//*----------------------------------------------------------------
-CTL-OPT
-  OPTION(*NODEBUGIO:*SRCSTMT:*NOUNREF)
-  DFTACTGRP(*NO) ACTGRP(*NEW) DATEDIT(*DMY) DATFMT(*ISO)
-  ALWNULL( *USRCTL )
-  COPYRIGHT('© BANCO DAVIVIENDA HONDURAS S.A.| V1.0.0 20250819 | EXTTCPG01');
+  // Campos gemelos
+  RORGCNTRH2 = RORGCNTRH;
+  RORGAMTH2  = RORGAMTH;
+  REXCHRATH2 = REXCHRATH;
+  REXCHRATH3 = REXCHRATH;
 
-//*----------------------------------------------------------------
-//* INCLUDES
-//*----------------------------------------------------------------
-/COPY BCAH96/QRPGLESRC,COPYRIGHT
-/COPY QSYSINC/QRPGLESRC,QUSEC
-/COPY QSYSINC/QRPGLESRC,QSYRUSRI
 
-//*----------------------------------------------------------------
-//* DECLARACION DE ARCHIVOS
-//*----------------------------------------------------------------
-// ARCHIVO DE PANTALLAS (MTCADISFL es un subfile heredado; se quita junto con NRR
-// cuando se limpien los registros heredados del DDS)
-DCL-F FMUNITCEL WORKSTN USAGE(*INPUT:*OUTPUT) SFILE(MTCADISFL:NRR)
-                INDDS(VNDINDIC);
 
-//*----------------------------------------------------------------
-//* VARIABLES GLOBALES
-//*----------------------------------------------------------------
-DCL-S NRR ZONED(5:0) INZ(0);
 
-// ESTRUCTURA PARA INDICADORES DE PANTALLA
-DCL-DS VNDINDIC QUALIFIED;
-   Salir     IND POS(3);
-   Renovar   IND POS(5);
-   Regresar  IND POS(12);
-END-DS;
 
-//*----------------------------------------------------------------
-//* CONSTANTES
-//*----------------------------------------------------------------
-// Pantallas
-DCL-C PAN_SALIR    0;
-DCL-C PAN_CONSULTA 1;
-DCL-C PAN_BENEF    2;
-DCL-C PAN_REMIT    3;
-DCL-C PAN_REFER    4;
-
-//*----------------------------------------------------------------
-//* PROGRAMAS EXTERNOS
-//*----------------------------------------------------------------
-// TRAE EL NOMBRE DEL BANCO
-DCL-PR BCONAMEPGM EXTPGM('BCAH96/BCONAMEPGM');
-  *N CHAR(40);
-END-PR;
-
-//*----------------------------------------------------------------
-//* PROGRAM STATUS
-//*----------------------------------------------------------------
-DCL-DS PGM_STATUS PSDS;
-  PROGRAM CHAR(10) POS(01);
-END-DS;
-
-//*----------------------------------------------------------------
-//* MAINLINE
-//*----------------------------------------------------------------
-PRINICIALIZA();
-PRFLUJO();
-
-*INLR = *ON;
-RETURN;
-
-//*----------------------------------------------------------------
-//* PROCEDURES & SUBROUTINES
-//*----------------------------------------------------------------
-
-//* DATOS DE CABECERA (PROGRAMA Y BANCO)
-DCL-PROC PRINICIALIZA;
-  DCL-PI *N;
-  END-PI;
-  DCL-S BCONAME CHAR(40) INZ('');
-  CALLP BCONAMEPGM(BCONAME);
-  NOMBCO = BCONAME;
-  NOMPGM = PROGRAM;
-END-PROC;
-
-//* FLUJO PRINCIPAL DE PANTALLAS
-DCL-PROC PRFLUJO;
-  DCL-PI *N;
-  END-PI;
-  DCL-S pantalla INT(5) INZ(PAN_CONSULTA);
-  DOW pantalla <> PAN_SALIR;
-    SELECT;
-      WHEN pantalla = PAN_CONSULTA;
-        pantalla = PRPANCONSULTA();
-      WHEN pantalla = PAN_BENEF;
-        pantalla = PRPANBENEF();
-      WHEN pantalla = PAN_REMIT;
-        pantalla = PRPANREMIT();
-      WHEN pantalla = PAN_REFER;
-        pantalla = PRPANREFER();
-      OTHER;
-        pantalla = PAN_SALIR;
-    ENDSL;
-  ENDDO;
-END-PROC;
-
-//* PANTALLA CONSULTAR
-DCL-PROC PRPANCONSULTA;
-  DCL-PI *N INT(5);
-  END-PI;
-  CLEAR VNDINDIC;
-  EXFMT @CONSULTAR;
-  // F3 y F12 salen del programa; F5 limpia la referencia
-  SELECT;
-    WHEN VNDINDIC.Salir OR VNDINDIC.Regresar;
-      RETURN PAN_SALIR;
-    WHEN VNDINDIC.Renovar;
-      REFREMESA = 0;
-      RETURN PAN_CONSULTA;
-  ENDSL;
-  // Enter: la referencia debe tener 10 digitos e iniciar con 5
-  IF REFREMESA < 5000000000 OR REFREMESA > 5999999999;
-    PRMENSAJE('REFERENCIA INVALIDA');
-    RETURN PAN_CONSULTA;
-  ENDIF;
-  IF PRCARGADATOS();
-    RETURN PAN_BENEF;
-  ENDIF;
-  RETURN PAN_CONSULTA;
-END-PROC;
-
-//* PANTALLA BENEFICIARIO
-DCL-PROC PRPANBENEF;
-  DCL-PI *N INT(5);
-  END-PI;
-  CLEAR VNDINDIC;
-  EXFMT @BENEFICIA;
-  SELECT;
-    WHEN VNDINDIC.Salir;
-      RETURN PAN_SALIR;
-    WHEN VNDINDIC.Regresar;
-      RETURN PAN_CONSULTA;
-    WHEN VNDINDIC.Renovar;
-      IF PRCARGADATOS();
-        RETURN PAN_BENEF;
-      ENDIF;
-      RETURN PAN_CONSULTA;
-  ENDSL;
-  RETURN PAN_REMIT;
-END-PROC;
-
-//* PANTALLA REMITENTE
-DCL-PROC PRPANREMIT;
-  DCL-PI *N INT(5);
-  END-PI;
-  CLEAR VNDINDIC;
-  EXFMT @REMITENTE;
-  SELECT;
-    WHEN VNDINDIC.Salir;
-      RETURN PAN_SALIR;
-    WHEN VNDINDIC.Regresar;
-      RETURN PAN_BENEF;
-    WHEN VNDINDIC.Renovar;
-      IF PRCARGADATOS();
-        RETURN PAN_REMIT;
-      ENDIF;
-      RETURN PAN_CONSULTA;
-  ENDSL;
-  RETURN PAN_REFER;
-END-PROC;
-
-//* PANTALLA REFERENCIA
-DCL-PROC PRPANREFER;
-  DCL-PI *N INT(5);
-  END-PI;
-  CLEAR VNDINDIC;
-  EXFMT @REFERENCI;
-  SELECT;
-    WHEN VNDINDIC.Salir;
-      RETURN PAN_SALIR;
-    WHEN VNDINDIC.Regresar;
-      RETURN PAN_REMIT;
-    WHEN VNDINDIC.Renovar;
-      IF PRCARGADATOS();
-        RETURN PAN_REFER;
-      ENDIF;
-      RETURN PAN_CONSULTA;
-  ENDSL;
-  // Enter en la ultima pantalla: nueva consulta
-  RETURN PAN_CONSULTA;
-END-PROC;
-
-//* CARGA LOS DATOS DE LA REFERENCIA DESDE REUNITHIST
-//* *ON si encontro la referencia, *OFF si no.
-//* Los nombres de columna coinciden con los campos del DDS (REFFLD a REUNITHIST),
-//* por eso el SELECT lee directo a los campos de pantalla.
-DCL-PROC PRCARGADATOS;
-  DCL-PI *N IND;
-  END-PI;
-
-  // Llave de busqueda: columna RCODIGOPH  [CONFIRMAR que es la referencia de 10 digitos]
-  DCL-S wRef LIKE(RCODIGOPH);
-
-  // Indicadores de nulo para columnas cuyo tipo aun no se confirma con DSPFFD
-  DCL-DS nul QUALIFIED;
-    est    INT(5);
-    orgAmt INT(5);
-    payAmt INT(5);
-    exch   INT(5);
-    fec    INT(5);
-    bPost  INT(5);
-    bPhon  INT(5);
-    sPost  INT(5);
-    sPhon  INT(5);
-  END-DS;
-
-  // [CONFIRMAR tipo de RCODIGOPH]
-  //   si es CHAR     -> wRef = %CHAR(REFREMESA);
-  //   si es numerico -> wRef = REFREMESA;
-  wRef = %CHAR(REFREMESA);
 
   EXEC SQL
     SELECT COALESCE(RBENFNAMH, ''), COALESCE(RBENMNAMH, ''),
@@ -237,79 +34,40 @@ DCL-PROC PRCARGADATOS;
            COALESCE(RSNDCITYH, ''), COALESCE(RSNDADDRH, ''),
            COALESCE(RORGCURH, ''), COALESCE(RORGCNTRH, ''),
            COALESCE(RPAYCURH, ''),
-           RESTATREMH, RORGAMTH, RPAYAMTH, REXCHRATH, RDATRECIH
-      INTO :RBENFNAMH, :RBENMNAMH,
-           :RBENLNAMH, :RBEN2NAMH,
+           RESTATREMH, RORGAMTH, RPAYAMTH, REXCHRATH, RDATRECIH,
+           RCANALPAGH
+      INTO :RBENFNAMH, :RBENMNAMH, :RBENLNAMH, :RBEN2NAMH,
            :RBENCTRYH, :RBENSTATH,
            :RBENPOSTH :nul.bPost, :RBENPHONH :nul.bPhon,
            :RBENCITYH, :RBENADR1H,
-           :RSNDFNAMH, :RSNDMNAMH,
-           :RSNDLNAMH, :RSND2NAMH,
+           :RSNDFNAMH, :RSNDMNAMH, :RSNDLNAMH, :RSND2NAMH,
            :RSNDNATCH, :RSNDSTATH,
            :RSNDPOSTH :nul.sPost, :RSNDPHONH :nul.sPhon,
            :RSNDCITYH, :RSNDADDRH,
-           :RORGCURH, :RORGCNTRH,
-           :RPAYCURH,
+           :RORGCURH, :RORGCNTRH, :RPAYCURH,
            :RESTATREMH :nul.est, :RORGAMTH :nul.orgAmt,
            :RPAYAMTH :nul.payAmt, :REXCHRATH :nul.exch,
-           :RDATRECIH :nul.fec
+           :RDATRECIH :nul.fec, :RCANALPAGH :nul.canal
       FROM BCAH96DTA.REUNITHIST
-     WHERE RCODIGOPH = :wRef
-     -- [CONFIRMAR] si REUNITHIST guarda historial (varias filas por referencia),
-     -- definir cual mostrar, p.ej. ORDER BY RDATRECIH DESC
+     WHERE RIDREMESAH = :RCODIGOPH
      FETCH FIRST 1 ROW ONLY;
 
-  // SQLCODE positivo (excepto 100) es solo aviso, p.ej. texto truncado
-  SELECT;
-    WHEN SQLCODE = 100;
-      PRMENSAJE('REFERENCIA NO EXISTE');
-      RETURN *OFF;
-    WHEN SQLCODE < 0;
-      PRMENSAJE('ERROR SQL ' + %CHAR(SQLCODE));
-      RETURN *OFF;
-  ENDSL;
 
-  // Columnas nulas -> valor vacio/cero
-  IF nul.bPost  < 0; CLEAR RBENPOSTH;  ENDIF;
-  IF nul.bPhon  < 0; CLEAR RBENPHONH;  ENDIF;
-  IF nul.sPost  < 0; CLEAR RSNDPOSTH;  ENDIF;
-  IF nul.sPhon  < 0; CLEAR RSNDPHONH;  ENDIF;
-  IF nul.est    < 0; CLEAR RESTATREMH; ENDIF;
-  IF nul.orgAmt < 0; CLEAR RORGAMTH;   ENDIF;
-  IF nul.payAmt < 0; CLEAR RPAYAMTH;   ENDIF;
-  IF nul.exch   < 0; CLEAR REXCHRATH;  ENDIF;
-  IF nul.fec    < 0; CLEAR RDATRECIH;  ENDIF;
 
-  // Campos que la pantalla muestra
-  RCODIGOPH  = wRef;                        // REFERENCIA (fila 4)
-  FLSTSDESCR = FNESTATUSDESC(RESTATREMH);   // descripcion del estatus (fila 5)
 
-  // Campos gemelos de @REFERENCI (mismo dato en dos posiciones)
-  FLD001 = RORGAMTH;      // MONTO REFERENCIA
-  FLD002 = RORGCNTRH;     // PAIS REMITENTE
 
-  // PENDIENTES (sin origen confirmado, ver contexto):
-  //   FORMA DE PAGO, TASA REFERENCIA, TASA DEL BANCO A FECHA DE LA VENTA
 
-  RETURN *ON;
-END-PROC;
 
-//* DESCRIPCION DEL ESTATUS DE LA REMESA
-//* PENDIENTE: catalogo de codigos [CONFIRMAR]
-DCL-PROC FNESTATUSDESC;
-  DCL-PI *N CHAR(30);
-    pEstatus LIKE(RESTATREMH) CONST;
-  END-PI;
-  // WHEN pEstatus = '??';  RETURN 'PENDIENTE DE PAGO';   // [CONFIRMAR codigos]
-  RETURN 'ESTATUS ' + %TRIM(%CHAR(pEstatus));
-END-PROC;
 
-//* MUESTRA UN MENSAJE EN LA VENTANA MENSAJE (max. 20 caracteres)
-DCL-PROC PRMENSAJE;
-  DCL-PI *N;
-    pTexto CHAR(20) CONST;
-  END-PI;
-  MENSAJERR = pTexto;
-  EXFMT MENSAJE;
-  CLEAR VNDINDIC;
-END-PROC;
+  DCL-DS nul QUALIFIED;
+    bPost  INT(5);
+    bPhon  INT(5);
+    sPost  INT(5);
+    sPhon  INT(5);
+    est    INT(5);
+    orgAmt INT(5);
+    payAmt INT(5);
+    exch   INT(5);
+    fec    INT(5);
+    canal  INT(5);
+  END-DS;
