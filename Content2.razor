@@ -1,90 +1,67 @@
-REUN001002R   H  REFFLD($REUN01/REUN001002 BCAH96DTA/REUN01)
-
-
-
-
-EXEC SQL SET OPTION COMMIT=*NONE, CLOSQLCSR=*ENDMOD, DATFMT=*ISO;
-
-
-
-
-DCL-PROC PRCARGASFL01;
+DCL-PROC PREJECUTARPROGRAMA;
   DCL-PI *N;
   END-PI;
-  DCL-S wUsuario CHAR(10);
   DCL-S wPgm     CHAR(10);
   DCL-S wLib     CHAR(10);
-  DCL-S wDes     CHAR(50);
+  DCL-S COMANDO  CHAR(100);
+  DCL-S LONGITUD PACKED(15:5);
+  DCL-S llamando IND INZ(*OFF);
 
-  *IN63 = *OFF;
-  *IN25 = *OFF;
-  wUsuario = USER;
+  TITLEMSG1 = ' ERROR ';
+  wPgm = %TRIM(REUN001001);
+  wLib = %TRIM(REUN001002);
 
-  EXEC SQL DECLARE C1 CURSOR FOR
-    SELECT P.REUN001001, P.REUN001002, P.REUN001003
-      FROM BCAH96DTA.REUN04 U
-      JOIN BCAH96DTA.REUN01 P
-        ON P.REUN001001 = U.REUN04002
-     WHERE U.REUN04001 = :wUsuario
-     ORDER BY P.REUN001001
-     FETCH FIRST 9999 ROWS ONLY
-     FOR READ ONLY;
-
-  EXEC SQL OPEN C1;
-  IF SQLCODE < 0;
-    TITLEMSG1 = ' ERROR ';
-    WERRMSG = 'ERROR SQL AL ABRIR LISTA. SQLCODE ' + %CHAR(SQLCODE);
+  // Validaciones previas
+  IF wPgm = ' ';
+    WERRMSG = 'LA OPCIÓN NO TIENE PROGRAMA ASIGNADO';
     EXFMT MSGERROR;
-  ELSE;
-    DOW '1';
-      EXEC SQL FETCH C1 INTO :wPgm, :wLib, :wDes;
-      IF SQLCODE <> 0;
-        LEAVE;
-      ENDIF;
-      OPC = ' ';
-      REUN001001 = wPgm;
-      REUN001002 = wLib;
-      REUN001003 = wDes;
-      NRR += 1;
-      WRITE WRCD1;
-    ENDDO;
-    EXEC SQL CLOSE C1;
+    RETURN;
   ENDIF;
 
-  *IN63 = *ON;
-  SFLSIZ01 = NRR;
-
-  IF NRR = 0;
-    OPC = ' ';
-    REUN001001 = ' ';
-    REUN001002 = ' ';
-    REUN001003 = '( LA LISTA ESTÁ VACÍA. )';
-    *IN25 = *ON;
-    NRR = 1;
-    WRITE WRCD1;
+  IF wLib = ' ';
+    wLib = '*LIBL';
   ENDIF;
 
-  *IN61 = *ON;
-  *IN60 = *ON;
+  MONITOR;
+    // 1. Verifica que el programa exista y se tenga autorización
+    COMANDO = 'CHKOBJ OBJ(' + %TRIM(wLib) + '/' + %TRIM(wPgm) +
+              ') OBJTYPE(*PGM)';
+    LONGITUD = %LEN(%TRIMR(COMANDO));
+    QCMDEXC(COMANDO : LONGITUD);
+
+    // 2. Ejecuta el programa
+    llamando = *ON;
+    COMANDO = 'CALL PGM(' + %TRIM(wLib) + '/' + %TRIM(wPgm) + ')';
+    LONGITUD = %LEN(%TRIMR(COMANDO));
+    QCMDEXC(COMANDO : LONGITUD);
+
+  ON-EXCP 'CPF9801';
+    IF llamando;
+      WERRMSG = 'ERROR: PGM ' + %TRIM(wPgm) + ' FALLÓ (CPF9801)';
+    ELSE;
+      WERRMSG = 'NO EXISTE EL PGM ' + %TRIM(wPgm);
+    ENDIF;
+    EXFMT MSGERROR;
+
+  ON-EXCP 'CPF9810';
+    WERRMSG = 'NO EXISTE LA LIBRERÍA ' + %TRIM(wLib);
+    EXFMT MSGERROR;
+
+  ON-EXCP 'CPF9802';
+    WERRMSG = 'SIN AUTORIZACIÓN AL PGM ' + %TRIM(wPgm);
+    EXFMT MSGERROR;
+
+  ON-ERROR;
+    IF llamando;
+      WERRMSG = 'ERROR DURANTE EL PGM ' + %TRIM(wPgm);
+    ELSE;
+      WERRMSG = 'NO SE PUDO VALIDAR EL PGM ' + %TRIM(wPgm);
+    ENDIF;
+    EXFMT MSGERROR;
+  ENDMON;
 END-PROC;
 
 
 
 
 
-    IF *IN03 = *OFF AND *IN12 = *OFF AND *IN25 = *OFF;
-      READC WRCD1;
-      DOW NOT %EOF(REUNITMENU);
-        SELECT;
-          WHEN OPC = '1';
-            PREJECUTARPROGRAMA();
-          WHEN OPC <> ' ';
-            TITLEMSG1 = ' ERROR ';
-            WERRMSG = 'OPCIÓN NO VÁLIDA. USE 1=SELECCIONAR';
-            EXFMT MSGERROR;
-        ENDSL;
-        OPC = ' ';
-        UPDATE WRCD1;
-        READC WRCD1;
-      ENDDO;
-    ENDIF;
